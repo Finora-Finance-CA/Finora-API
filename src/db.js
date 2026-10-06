@@ -9,6 +9,10 @@ if (!DATABASE_URL) {
   );
 }
 
+// Return DATE columns as 'YYYY-MM-DD' strings. By default pg turns them into a JS Date
+// at local midnight, which can shift the day by one when serialised to JSON as UTC.
+pg.types.setTypeParser(pg.types.builtins.DATE, (value) => value);
+
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
 // Catches the common copy-paste mistakes early, with a message that says how to fix them.
