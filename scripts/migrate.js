@@ -12,6 +12,14 @@ import { pool } from '../src/db.js';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../db/migrations/', import.meta.url));
 const MIGRATION_FILE_PATTERN = /^(\d{3})_[a-z0-9_]+\.sql$/;
 
+// Connection failures can be an AggregateError (one error per IPv4/IPv6 address)
+// with an empty message, so fall back to the inner errors or the error code.
+function describeError(err) {
+  if (err.message) return err.message;
+  if (err.errors?.length) return err.errors.map(describeError).join('; ');
+  return err.code ?? String(err);
+}
+
 async function listMigrationFiles() {
   const files = (await readdir(MIGRATIONS_DIR)).filter((file) => file.endsWith('.sql')).sort();
   const seenNumbers = new Map();
@@ -64,8 +72,10 @@ async function applyMigration(client, file) {
     await client.query('COMMIT');
     return true;
   } catch (err) {
-    await client.query('ROLLBACK');
-    throw new Error(`Migration ${file} failed and was rolled back: ${err.message}`, { cause: err });
+    // If the connection itself dropped, ROLLBACK fails too. Ignore that so the
+    // original error is the one reported; Postgres discards the transaction anyway.
+    await client.query('ROLLBACK').catch(() => {});
+    throw new Error(`Migration ${file} failed and was rolled back: ${describeError(err)}`, { cause: err });
   }
 }
 
@@ -78,6 +88,16 @@ async function migrate() {
     const { rows } = await client.query('SELECT filename FROM public.schema_migrations');
     const applied = new Set(rows.map((row) => row.filename));
     const pending = files.filter((file) => !applied.has(file));
+
+    // The database is shared, so someone may have applied a migration from a branch
+    // that this checkout doesn't have yet.
+    const unknown = [...applied].filter((file) => !files.includes(file));
+    if (unknown.length > 0) {
+      console.warn(
+        `Warning: the database has migrations that are not in db/migrations: ${unknown.join(', ')}. ` +
+          'Pull the latest develop before adding a new migration so the numbers do not clash.'
+      );
+    }
 
     if (pending.length === 0) {
       console.log('No pending migrations. Database is up to date.');
@@ -97,7 +117,7 @@ async function migrate() {
 try {
   await migrate();
 } catch (err) {
-  console.error(err.message);
+  console.error(`Migration run failed: ${describeError(err)}`);
   process.exitCode = 1;
 } finally {
   await pool.end();

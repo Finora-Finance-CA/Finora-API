@@ -11,15 +11,35 @@ if (!DATABASE_URL) {
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
+// Catches the common copy-paste mistakes early, with a message that says how to fix them.
+function parseDatabaseUrl(connectionString) {
+  if (connectionString.includes('[YOUR-PASSWORD]')) {
+    throw new Error('DATABASE_URL still contains [YOUR-PASSWORD]. Replace it with the database password.');
+  }
+
+  let url;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    url = null;
+  }
+  if (!url || !['postgres:', 'postgresql:'].includes(url.protocol)) {
+    throw new Error('DATABASE_URL must be a connection string starting with postgresql://');
+  }
+  return url;
+}
+
 // Supabase requires SSL. A local Postgres (e.g. in Docker) usually has it turned off.
 function sslConfig(connectionString) {
-  const { hostname } = new URL(connectionString);
+  const { hostname } = parseDatabaseUrl(connectionString);
   return LOCAL_HOSTS.has(hostname) ? false : { rejectUnauthorized: false };
 }
 
 export const pool = new pg.Pool({
   connectionString: DATABASE_URL,
   ssl: sslConfig(DATABASE_URL),
+  // Fail fast when the database is unreachable instead of hanging indefinitely.
+  connectionTimeoutMillis: 10_000,
 });
 
 // An idle client can lose its connection (e.g. the database restarts). Log it
