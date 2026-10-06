@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { createApp } from './app.js';
-import { assertAuthConfig } from './auth/tokens.js';
+import { assertSupabaseConfig } from './auth/supabase.js';
 import { pool } from './db.js';
 
 // Fail at startup rather than on the first authenticated request.
 try {
-  assertAuthConfig();
+  assertSupabaseConfig();
 } catch (err) {
   console.error(err.message);
   process.exit(1);
