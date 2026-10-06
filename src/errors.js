@@ -23,3 +23,11 @@ export class UnauthorizedError extends HttpError {
     this.name = 'UnauthorizedError';
   }
 }
+
+// 404: the resource doesn't exist, or the user isn't allowed to know it exists.
+export class NotFoundError extends HttpError {
+  constructor(message = 'Not found.') {
+    super(404, message);
+    this.name = 'NotFoundError';
+  }
+}
