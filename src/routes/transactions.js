@@ -1,16 +1,40 @@
-// /api/transactions routes. Every route here requires a logged-in user.
+// /api/transactions routes. Every route here requires a logged-in user, and only
+// ever reads or changes that user's own transactions.
+//
+// Handlers stay thin: check the request (../transactions/validation.js), make one
+// repository call (../transactions/repository.js), send the response. Errors thrown
+// here are turned into JSON by the central error handler.
 
 import { Router } from 'express';
-import { UnauthorizedError } from '../errors.js';
+import { NotFoundError, UnauthorizedError } from '../errors.js';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { insertTransaction } from '../transactions/repository.js';
-import { validateCreateTransaction } from '../transactions/validation.js';
+import {
+  deleteTransaction,
+  insertTransaction,
+  listTransactions,
+  updateTransaction,
+} from '../transactions/repository.js';
+import { validateTransactionBody, validateTransactionId } from '../transactions/validation.js';
 
 // Postgres error code for a foreign key violation.
 const FOREIGN_KEY_VIOLATION = '23503';
 
-export async function createTransaction(req, res) {
-  const { errors, value } = validateCreateTransaction(req.body);
+// Paging, search and filters are Sprint 2 stories. Until then the list is just the
+// most recent transactions.
+export const TRANSACTION_LIST_LIMIT = 50;
+
+// Sent whether the transaction doesn't exist or belongs to someone else.
+const TRANSACTION_NOT_FOUND = 'Transaction not found.';
+
+// GET /api/transactions
+export async function handleListTransactions(req, res) {
+  const transactions = await listTransactions(req.user.id, TRANSACTION_LIST_LIMIT);
+  return res.json({ transactions });
+}
+
+// POST /api/transactions
+export async function handleCreateTransaction(req, res) {
+  const { errors, value } = validateTransactionBody(req.body);
   if (errors) {
     return res.status(400).json({ errors });
   }
@@ -27,7 +51,41 @@ export async function createTransaction(req, res) {
   }
 }
 
+// PUT /api/transactions/:id
+export async function handleUpdateTransaction(req, res) {
+  const idError = validateTransactionId(req.params.id);
+  const { errors: bodyErrors, value } = validateTransactionBody(req.body);
+  if (idError || bodyErrors) {
+    // Report a bad id together with any body errors, so every problem shows at once.
+    const errors = idError ? { id: idError, ...bodyErrors } : bodyErrors;
+    return res.status(400).json({ errors });
+  }
+
+  const transaction = await updateTransaction(req.user.id, req.params.id, value);
+  if (!transaction) {
+    throw new NotFoundError(TRANSACTION_NOT_FOUND);
+  }
+  return res.json({ transaction });
+}
+
+// DELETE /api/transactions/:id
+export async function handleDeleteTransaction(req, res) {
+  const idError = validateTransactionId(req.params.id);
+  if (idError) {
+    return res.status(400).json({ errors: { id: idError } });
+  }
+
+  const wasDeleted = await deleteTransaction(req.user.id, req.params.id);
+  if (!wasDeleted) {
+    throw new NotFoundError(TRANSACTION_NOT_FOUND);
+  }
+  return res.status(204).end();
+}
+
 export const transactionsRouter = Router();
 
 transactionsRouter.use(requireAuth);
-transactionsRouter.post('/', createTransaction);
+transactionsRouter.get('/', handleListTransactions);
+transactionsRouter.post('/', handleCreateTransaction);
+transactionsRouter.put('/:id', handleUpdateTransaction);
+transactionsRouter.delete('/:id', handleDeleteTransaction);

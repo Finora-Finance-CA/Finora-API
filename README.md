@@ -71,7 +71,7 @@ Missing, invalid or expired tokens get `401` with `{ "error": "..." }` and a `WW
 
 `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` must be set, or the server will not start. Only the publishable key is used; the secret key must never be added here.
 
-Routes and middleware can throw `HttpError(status, message)` or `UnauthorizedError(message)` from `src/errors.js`, and the central error handler sends `{ "error": message }` with that status.
+Routes and middleware can throw `HttpError(status, message)`, `UnauthorizedError(message)` or `NotFoundError(message)` from `src/errors.js`, and the central error handler sends `{ "error": message }` with that status.
 
 ### Testing with a real token
 1. Run the front-end and log in.
@@ -110,7 +110,7 @@ To add a migration:
 
 All request and response bodies are JSON. Errors use one of two shapes:
 
-- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`.
+- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`.
 - `401`, `404`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
 
 `GET /health` is the one exception, and uses its own shape (below).
@@ -131,6 +131,49 @@ Public: no token needed. Checks that the API is running and can reach the databa
 ```
 
 Supabase Auth is not checked here.
+
+### `GET /api/transactions`
+Lists the logged-in user's 50 most recent transactions, newest first: by `date`, then by when they were created. Other users' transactions are never included. Paging, search and filters are not supported yet (Sprint 2).
+
+Headers:
+
+```http
+Authorization: Bearer <supabase access token>
+```
+
+`200 OK`:
+
+```json
+{
+  "transactions": [
+    {
+      "id": "42",
+      "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "amount_cents": 1250,
+      "date": "2026-10-05",
+      "type": "expense",
+      "category": "Food",
+      "description": "Lunch",
+      "created_at": "2026-10-05T18:30:00.000Z",
+      "updated_at": "2026-10-05T18:30:00.000Z"
+    }
+  ]
+}
+```
+
+A user with no transactions gets `{ "transactions": [] }`.
+
+`401 Unauthorized`, when the token is missing, invalid or expired:
+
+```json
+{ "error": "Authentication required. Send an Authorization: Bearer <token> header." }
+```
+
+`500 Internal Server Error`:
+
+```json
+{ "error": "Something went wrong. Please try again later." }
+```
 
 ### `POST /api/transactions`
 Creates a transaction for the logged-in user.
@@ -201,6 +244,112 @@ Example request:
 
 ```json
 { "error": "Authentication required. Send an Authorization: Bearer <token> header." }
+```
+
+`500 Internal Server Error`:
+
+```json
+{ "error": "Something went wrong. Please try again later." }
+```
+
+### `PUT /api/transactions/:id`
+Replaces a transaction owned by the logged-in user. `:id` is the transaction's `id`.
+
+Headers:
+
+```http
+Authorization: Bearer <supabase access token>
+Content-Type: application/json
+```
+
+Body: the same fields and rules as [`POST /api/transactions`](#post-apitransactions). Every field is replaced, so send the whole transaction. An optional field that is left out (`description`, or `category` on an `income`) is cleared to `null`. Any other fields, including `id` and `user_id`, are ignored.
+
+Example request to `PUT /api/transactions/42`:
+
+```json
+{
+  "amount_cents": 1500,
+  "date": "2026-10-05",
+  "type": "expense",
+  "category": "Food",
+  "description": "Lunch and coffee"
+}
+```
+
+`200 OK` with the updated transaction. `updated_at` is set to the time of the update.
+
+```json
+{
+  "transaction": {
+    "id": "42",
+    "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+    "amount_cents": 1500,
+    "date": "2026-10-05",
+    "type": "expense",
+    "category": "Food",
+    "description": "Lunch and coffee",
+    "created_at": "2026-10-05T18:30:00.000Z",
+    "updated_at": "2026-10-06T09:15:00.000Z"
+  }
+}
+```
+
+`400 Bad Request`, listing a bad `id` together with any invalid body fields:
+
+```json
+{
+  "errors": {
+    "id": "id must be a positive whole number.",
+    "amount_cents": "amount_cents must be greater than zero."
+  }
+}
+```
+
+`401 Unauthorized`, when the token is missing, invalid or expired:
+
+```json
+{ "error": "Authentication required. Send an Authorization: Bearer <token> header." }
+```
+
+`404 Not Found`, when no transaction with that id exists or it belongs to another user. The response is the same in both cases, so other users' ids can't be discovered.
+
+```json
+{ "error": "Transaction not found." }
+```
+
+`500 Internal Server Error`:
+
+```json
+{ "error": "Something went wrong. Please try again later." }
+```
+
+### `DELETE /api/transactions/:id`
+Deletes a transaction owned by the logged-in user. `:id` is the transaction's `id`.
+
+Headers:
+
+```http
+Authorization: Bearer <supabase access token>
+```
+
+`204 No Content` on success, with an empty body.
+
+`400 Bad Request`, when `:id` is not a positive whole number:
+
+```json
+{ "errors": { "id": "id must be a positive whole number." } }
+```
+
+`401 Unauthorized`, when the token is missing, invalid or expired:
+
+```json
+{ "error": "Authentication required. Send an Authorization: Bearer <token> header." }
+```
+
+`404 Not Found`, when no transaction with that id exists or it belongs to another user. The response is the same in both cases.
+
+```json
+{ "error": "Transaction not found." }
 ```
 
 `500 Internal Server Error`:

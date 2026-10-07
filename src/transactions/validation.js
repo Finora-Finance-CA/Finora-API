@@ -1,5 +1,6 @@
-// Validation for transaction request bodies. Pure functions with no Express or
-// database dependencies, so they can be unit tested directly.
+// Validation for transaction requests: the JSON body and the :id in the URL.
+// Pure functions with no Express or database dependencies, so they can be unit
+// tested directly.
 
 // These lists mirror the CHECK constraints in db/migrations/002_create_transactions.sql.
 // If a migration changes them, update these too.
@@ -11,7 +12,12 @@ export const MAX_AMOUNT_CENTS = 2_147_483_647;
 export const MAX_DESCRIPTION_LENGTH = 255;
 export const MIN_YEAR = 1900;
 
+// Largest value a Postgres BIGINT column (transactions.id) can hold.
+export const MAX_TRANSACTION_ID = 9_223_372_036_854_775_807n;
+
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+// Digits only: no sign, decimals or leading zeros. Identity ids start at 1.
+const TRANSACTION_ID_PATTERN = /^[1-9]\d*$/;
 
 function isMissing(value) {
   return value === undefined || value === null || value === '';
@@ -66,15 +72,32 @@ function validateDescription(value) {
 }
 
 /**
- * Validates the body of a create transaction request.
+ * Checks a transaction id taken from the URL, e.g. PUT /api/transactions/:id.
  *
- * Only the known fields are read; anything else (including user_id) is ignored.
+ * Without this, a value like "abc" or "1.5" would reach Postgres, fail to cast to
+ * BIGINT and turn into a 500 instead of a 400.
+ *
+ * @param {unknown} value The raw route parameter.
+ * @returns {string|null} An error message, or null if the id is valid.
+ */
+export function validateTransactionId(value) {
+  if (typeof value !== 'string' || !TRANSACTION_ID_PATTERN.test(value) || BigInt(value) > MAX_TRANSACTION_ID) {
+    return 'id must be a positive whole number.';
+  }
+  return null;
+}
+
+/**
+ * Validates the body of a create (POST) or update (PUT) request. An update replaces
+ * every field, so both take the same fields and follow the same rules.
+ *
+ * Only the known fields are read; anything else (including id and user_id) is ignored.
  *
  * @param {unknown} body The parsed JSON request body.
  * @returns {{ errors: Record<string, string> } | { errors: null, value: object }}
- *   Either every invalid field with a message, or the cleaned values ready to insert.
+ *   Either every invalid field with a message, or the cleaned values ready to save.
  */
-export function validateCreateTransaction(body) {
+export function validateTransactionBody(body) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { errors: { body: 'Request body must be a JSON object. Set Content-Type: application/json.' } };
   }
