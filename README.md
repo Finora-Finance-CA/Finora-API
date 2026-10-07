@@ -19,15 +19,19 @@ npm install
 cp .env.example .env
 ```
 
+On Windows, nvm-windows ignores `.nvmrc`, so run `nvm use 22` instead of `nvm use`. In PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
+
 Fill in `.env` (real values are in the team's credential document):
 
-| Variable | Value |
-| --- | --- |
-| `PORT` | `4000` |
-| `DATABASE_URL` | Supabase **Session pooler** connection string, with the password filled in |
-| `CLIENT_ORIGIN` | `http://localhost:5173` |
-| `SUPABASE_URL` | `https://<project-id>.supabase.co` |
-| `SUPABASE_PUBLISHABLE_KEY` | The project's publishable key (`sb_publishable_...`) |
+| Variable | Required | Value |
+| --- | --- | --- |
+| `DATABASE_URL` | Yes | Supabase **Session pooler** connection string, with the password filled in |
+| `SUPABASE_URL` | Yes | `https://<project-id>.supabase.co` |
+| `SUPABASE_PUBLISHABLE_KEY` | Yes | The project's publishable key (`sb_publishable_...`) |
+| `PORT` | No | `4000` (also the default if left empty). The front-end's Vite proxy expects this port. |
+| `CLIENT_ORIGIN` | No | `http://localhost:5173`. Not used yet. Reserved for CORS. |
+
+The server will not start without the three required variables. The shared database is already migrated, so you don't need to run `npm run migrate` to get started.
 
 Then start the server:
 
@@ -35,7 +39,7 @@ Then start the server:
 npm run dev
 ```
 
-Check http://localhost:4000/health returns `{ "status": "ok" }`.
+Check http://localhost:4000/health returns `{ "status": "ok", "database": "ok" }`. If it returns `503`, the API is running but can't reach the database: check `DATABASE_URL`.
 
 | Command | What it does |
 | --- | --- |
@@ -61,7 +65,7 @@ Users sign up and log in through Supabase Auth in the front-end. Protected endpo
 Authorization: Bearer <supabase access token>
 ```
 
-`src/middleware/requireAuth.js` verifies the token with Supabase (`src/auth/supabaseTokens.js`, using `getClaims`) and sets `req.user = { id }`, where `id` is the Supabase user id (`auth.users.id`). Routes should always take the user from `req.user.id`, never from the request body.
+`src/middleware/requireAuth.js` verifies the token with Supabase (`src/auth/supabaseTokens.js`, using `getClaims`) and sets `req.user = { id }`, where `id` is the token's `sub` claim: the Supabase user id (`auth.users.id`, a UUID). Only tokens for signed-in users (`role` of `authenticated`) are accepted. Routes should always take the user from `req.user.id`, never from the request body.
 
 Missing, invalid or expired tokens get `401` with `{ "error": "..." }` and a `WWW-Authenticate: Bearer` header. If Supabase can't be reached, the request fails with `500`.
 
@@ -102,51 +106,31 @@ To add a migration:
 
 `src/db.js` exports the shared `pg` pool and a `query(text, params)` helper. SSL is turned on automatically for any host other than localhost. Don't add `sslmode` to `DATABASE_URL`. If the database password contains special characters such as `@`, `#` or `/`, URL-encode them in `DATABASE_URL`.
 
-## Authentication
-Protected endpoints need a JSON Web Token in the `Authorization` header:
-
-```http
-Authorization: Bearer <token>
-```
-
-Tokens are JWTs signed with `JWT_SECRET` using HS256, with these claims:
-
-- `sub`: the user's id (`users.id`, a UUID).
-- `type`: always `"access"`. Tokens of any other type signed with the same secret (for example a future refresh token) are rejected, so they can never be used to call the API.
-- `exp`: expiry, 1 hour by default. Tokens without one are rejected.
-
-The API always takes the user from the token, never from the request body. `JWT_SECRET` must be set or the server will not start, and it should be at least 32 bytes of random data.
-
-`src/auth/tokens.js` exports `signToken(userId, { expiresIn })` and `verifyToken(token)`. `src/middleware/requireAuth.js` checks the header and sets `req.user = { id }`. If the token is missing, malformed, tampered with or expired, the response is `401` with `{ "error": "..." }` and a `WWW-Authenticate: Bearer` header.
-
-Routes and middleware can throw `HttpError(status, message)` or `UnauthorizedError(message)` from `src/errors.js`, and the central error handler sends `{ "error": message }` with that status.
-
-This is minimal auth added for US-13. Registration, login and logout (US-01 to US-05) will build on it or replace it.
-
-### Dev token script
-Until login exists, get a token for testing with:
-
-```bash
-npm run dev:token -- someone@example.com
-```
-
-It finds the user with that email, or creates one, and prints a token valid for 1 hour. Users it creates get a placeholder `password_hash` that can never match a real password. The script refuses to run when `NODE_ENV` is `production`. It writes to the database in `DATABASE_URL`, so use a test email.
-
-To capture the token in PowerShell:
-
-```powershell
-$token = npm run --silent dev:token -- someone@example.com
-```
-
 ## API
 
 All request and response bodies are JSON. Errors use one of two shapes:
 
-- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once.
-- `401`, `404`, `500`: `{ "error": "<message>" }`. A `500` never includes internal details.
+- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`.
+- `401`, `404`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
+
+`GET /health` is the one exception, and uses its own shape (below).
 
 ### `GET /health`
-Returns `200` with `{ "status": "ok" }`.
+Public: no token needed. Checks that the API is running and can reach the database with a read-only `SELECT 1`. The response is never cached.
+
+`200 OK` when the database answers:
+
+```json
+{ "status": "ok", "database": "ok" }
+```
+
+`503 Service Unavailable` when the database can't be reached or takes longer than 3 seconds. The reason is logged by the API, not sent in the response.
+
+```json
+{ "status": "error", "database": "unreachable" }
+```
+
+Supabase Auth is not checked here.
 
 ### `POST /api/transactions`
 Creates a transaction for the logged-in user.
@@ -154,7 +138,7 @@ Creates a transaction for the logged-in user.
 Headers:
 
 ```http
-Authorization: Bearer <token>
+Authorization: Bearer <supabase access token>
 Content-Type: application/json
 ```
 
@@ -213,7 +197,7 @@ Example request:
 }
 ```
 
-`401 Unauthorized`:
+`401 Unauthorized`, when the token is missing, invalid or expired, or the user's account has since been deleted:
 
 ```json
 { "error": "Authentication required. Send an Authorization: Bearer <token> header." }
@@ -232,5 +216,3 @@ Example request:
 
 ## Related Repos
 - [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd)
-
-Ayaan Test!
