@@ -45,8 +45,9 @@ Check http://localhost:4000/health returns `{ "status": "ok", "database": "ok" }
 | --- | --- |
 | `npm run dev` | Starts the API and restarts it on save |
 | `npm start` | Starts the API without watching |
-| `npm test` | Runs the tests once |
+| `npm test` | Runs the tests once (no database or `.env` needed) |
 | `npm run migrate` | Applies any new database migrations |
+| `npm run seed` | Loads two sample users with three months of transactions (see [Sample data](#sample-data)) |
 
 ## Switching to Supabase Auth: what to do after pulling
 The temporary JWT auth has been replaced by Supabase Auth. After pulling `develop`:
@@ -105,6 +106,67 @@ To add a migration:
 3. Never edit a migration that has already been applied. Add a new one instead.
 
 `src/db.js` exports the shared `pg` pool and a `query(text, params)` helper. SSL is turned on automatically for any host other than localhost. Don't add `sslmode` to `DATABASE_URL`. If the database password contains special characters such as `@`, `#` or `/`, URL-encode them in `DATABASE_URL`.
+
+## Tests
+
+```bash
+npm test
+```
+
+Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never touch the shared database or Supabase, so they need no `.env` and are safe to run any time:
+
+- `test/setup.js` runs before every test file. It replaces `src/db.js` with an in-memory database (`test/support/fakeDatabase.js`) and Supabase token checks with fixed test users (`test/support/fakeAuth.js`), and resets both before each test.
+- `vitest.config.js` also blanks `DATABASE_URL` and the Supabase variables during tests, so anything that slipped past the fakes would fail instead of connecting.
+- HTTP tests use Supertest against `createApp()` from `src/app.js`, with `ALICE` and `BOB` as logged-in users: `request(app).get('/api/transactions').set('Authorization', bearer(ALICE))`.
+- The fake database runs the app's simple SQL (SELECT, INSERT, UPDATE and DELETE with `column = $n` conditions) and applies exactly the conditions written, so ownership checks are really tested. A new kind of statement throws until it's supported in `fakeDatabase.js`.
+
+| Folder | What it covers |
+| --- | --- |
+| `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures |
+| `test/seed/` | The seed script's data, settings, Supabase sign-in/sign-up handling, database writes and the full run |
+| `test/health.test.js` | `/health` with the database up and down |
+| `test/setup.test.js` | That the fakes are really installed |
+
+### CI
+`.github/workflows/test.yml` runs `npm ci` and `npm test` on Node 22 (from `.nvmrc`) for every push and every pull request. It needs no secrets. A pull request should only be merged when this check passes.
+
+## Sample data
+
+```bash
+npm run seed
+```
+
+Creates or reuses two sample users and gives each about 28 transactions from the last three months, covering every category plus income. Use them to log in to the front-end and try the app with realistic data.
+
+### Setup
+Add these to `.env` (they're listed in `.env.example`):
+
+| Variable | Value |
+| --- | --- |
+| `SEED_USER_1_EMAIL`, `SEED_USER_2_EMAIL` | Two different addresses you control, for example `you+finora1@gmail.com` and `you+finora2@gmail.com` |
+| `SEED_USER_1_PASSWORD`, `SEED_USER_2_PASSWORD` | At least 8 characters. These are the passwords you'll log in with. |
+
+`DATABASE_URL`, `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` must be set too. Never commit real sample passwords.
+
+### What it does
+1. Refuses to run if `NODE_ENV` is `production`, and stops with a list of any missing variables.
+2. Signs in each sample user through Supabase Auth with the publishable key. If the account doesn't exist yet, it's created with normal sign-up, so email confirmation must be off (it is for this project).
+3. In one database transaction, deletes those two users' transactions and inserts the sample set. If anything fails, nothing is changed.
+4. Prints a summary: each user, whether the account was created or already existed, and how many transactions were loaded.
+
+Running it again gives the same result: the two sample users end up with the same sample transactions (dated relative to today) and nobody else's data is touched. Any changes you made to the sample users' transactions are replaced.
+
+### If it fails
+Every failure prints `Seed failed: ...` with what to do, and exits with code 1 without writing any transactions.
+
+| Message | What to do |
+| --- | --- |
+| `Missing SEED_USER_1_EMAIL, ...` | Add the listed variables to `.env`. |
+| `... already exists, but its password doesn't match` | Put that account's real password in `.env`, or use a different sample email. |
+| `Supabase is rate limiting ...` | Wait a few minutes and run it again. |
+| `Supabase rejected sign up ...` | Supabase's reason follows, for example an email domain it won't accept. Use a different address. |
+| `... has to confirm their email` | Email confirmation was turned on in Supabase. Turn it off, or confirm the address, then run it again. |
+| `Could not reach Supabase ...` | Check `SUPABASE_URL` and your connection. |
 
 ## API
 
