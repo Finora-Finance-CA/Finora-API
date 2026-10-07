@@ -3,6 +3,7 @@
 
 import express from 'express';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
+import { healthRouter } from './routes/health.js';
 import { transactionsRouter } from './routes/transactions.js';
 
 export function createApp() {
@@ -11,7 +12,7 @@ export function createApp() {
 
   app.use(express.json({ limit: '100kb' }));
 
-  app.get('/health', (req, res) => res.json({ status: 'ok' }));
+  app.use('/health', healthRouter);
   app.use('/api/transactions', transactionsRouter);
 
   app.use(notFound);

@@ -55,3 +55,29 @@ pool.on('error', (err) => {
 export function query(text, params) {
   return pool.query(text, params);
 }
+
+// A health check has to answer quickly, so it gives up well before the 10 second
+// connection timeout above.
+const PING_TIMEOUT_MS = 3_000;
+
+/**
+ * Checks the database is reachable with a read-only SELECT 1.
+ *
+ * @param {number} [timeoutMs]
+ * @returns {Promise<void>} Resolves if the database answered in time.
+ * @throws {Error} If the database can't be reached or doesn't answer in time.
+ */
+export async function pingDatabase(timeoutMs = PING_TIMEOUT_MS) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Database did not respond within ${timeoutMs} ms.`)), timeoutMs);
+  });
+
+  try {
+    // If the timeout wins, the query keeps running and its result is ignored;
+    // Promise.race still handles a late rejection, so nothing goes unhandled.
+    await Promise.race([pool.query('SELECT 1'), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
