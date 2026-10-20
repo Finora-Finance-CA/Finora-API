@@ -1,0 +1,32 @@
+# Render Blueprint for the API (US-34). See "Deployment" in README.md.
+# Secret values are never stored here: `sync: false` makes Render ask for each one
+# when the Blueprint is first created, and they then live only in the dashboard.
+
+services:
+  - type: web
+    name: finora-api
+    runtime: node
+    plan: free
+    # Render defaults to the oregon region. Before creating the service, add
+    # `region:` with the Render region closest to the Supabase project (it cannot be
+    # changed later), e.g. `region: virginia` for a project in us-east-1 or ca-central-1.
+    # Deploys every push to this branch.
+    branch: main
+    # Node 22 comes from .nvmrc and "engines" in package.json.
+    # Production dependencies only. Migrations and the seed are never run here:
+    # migrations are applied by hand (README, "Database Migrations").
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    # Returns 200 only when the API can reach the database.
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false

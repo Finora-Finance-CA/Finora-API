@@ -29,9 +29,10 @@ Fill in `.env` (real values are in the team's credential document):
 | `SUPABASE_URL` | Yes | `https://<project-id>.supabase.co` |
 | `SUPABASE_PUBLISHABLE_KEY` | Yes | The project's publishable key (`sb_publishable_...`) |
 | `PORT` | No | `4000` (also the default if left empty). The front-end's Vite proxy expects this port. |
-| `CLIENT_ORIGIN` | No | `http://localhost:5173`. Not used yet. Reserved for CORS. |
+| `CLIENT_ORIGIN` | No | `http://localhost:5173`. Sites allowed to call the API from a browser (see [CORS](#cors)). Not needed locally, because the Vite proxy makes requests same-origin. |
+| `NODE_ENV` | No | Leave unset locally. `production` on Render. |
 
-The server will not start without the three required variables. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `005_create_budgets.sql`); it only applies files the shared database doesn't have yet.
+The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `005_create_budgets.sql`); it only applies files the shared database doesn't have yet.
 
 Then start the server:
 
@@ -71,6 +72,19 @@ Authorization: Bearer <supabase access token>
 Missing, invalid, expired or malformed tokens (for example `Bearer abc.def.ghi`) get `401` with `{ "error": "..." }` and a `WWW-Authenticate: Bearer` header. If Supabase can't be reached, the request fails with `500`.
 
 `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` must be set, or the server will not start. Only the publishable key is used; the secret key must never be added here.
+
+## CORS
+`src/cors.js` uses the `cors` package so that only the sites in `CLIENT_ORIGIN` can call the API from a browser. `CLIENT_ORIGIN` is a comma-separated list of origins (scheme and host only, no path), for example:
+
+```
+CLIENT_ORIGIN=https://finora.vercel.app,http://localhost:5173
+```
+
+- A listed site gets `Access-Control-Allow-Origin` (and `Vary: Origin`) on every response, errors included, so the front-end can read a `401`.
+- Preflight (`OPTIONS`) requests are answered with `204`, allowing `GET`, `POST`, `PUT` and `DELETE` with the `Authorization` and `Content-Type` headers, cached by the browser for 10 minutes.
+- Any other site gets no CORS headers, so the browser blocks it from reading the response.
+- Requests with no `Origin` (curl, Render's health check) work as before. CORS is enforced by browsers only; it is not access control, and every `/api` route still needs a token.
+- An empty `CLIENT_ORIGIN` allows no other site. `*`, a path or a value that isn't an `http(s)` origin stops the server at startup with a message naming the bad entry.
 
 Routes and middleware can throw `HttpError(status, message)`, `UnauthorizedError(message)` or `NotFoundError(message)` from `src/errors.js`, and the central error handler sends `{ "error": message }` with that status.
 
@@ -131,6 +145,8 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 | `test/constants.test.js` | That `CATEGORIES` matches the categories migration 004 seeds |
 | `test/seed/` | The seed script's data, settings, Supabase sign-in/sign-up handling, database writes and the full run |
 | `test/health.test.js` | `/health` with the database up and down |
+| `test/cors.test.js` | Reading `CLIENT_ORIGIN`, and CORS headers and preflight for allowed sites, other sites and requests without an `Origin` |
+| `test/deployment.test.js` | That `render.yaml` builds and starts the API as documented, uses `/health`, sets `NODE_ENV=production`, stores no secrets and never runs migrations or the seed, and that Node is 22 everywhere |
 | `test/setup.test.js` | That the fakes are really installed |
 
 ### CI
@@ -555,6 +571,76 @@ Changes a budget's limit. Only `limit_cents` can change (same rules as above); t
 
 ### `DELETE /api/budgets/:id`
 Deletes a budget. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
+
+## Deployment
+The API runs on **Render** (free web service), set up by `render.yaml` in this repo. The front-end runs on Vercel; see the Deployment section in [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd#deployment). Secret values are only ever typed into the Render dashboard, never committed.
+
+### 1. Order of operations
+1. Check the database (step 3 below): migrations 001 to 005 applied.
+2. Deploy the API on Render (step 2) and note its URL, for example `https://finora-api.onrender.com`.
+3. Deploy the front-end on Vercel with `VITE_API_URL` set to that URL, and note the front-end's URL, for example `https://finora.vercel.app`.
+4. Put the front-end's URL in the API's `CLIENT_ORIGIN` on Render.
+5. Set the Supabase Auth URLs to the front-end's URL (step 3).
+6. Verify (step 4).
+
+### 2. Create the Render service
+1. Decide the region first: it can't be changed later. Find the Supabase project's region in its Session pooler host (`aws-0-<region>.pooler.supabase.com`). Render defaults to `oregon`; if the project is elsewhere, add `region:` under `plan: free` in `render.yaml` (for example `region: virginia` for `us-east-1` or `ca-central-1`) and merge that first.
+2. `render.yaml` deploys the `main` branch. To deploy before `develop` is merged into `main`, change `branch: main` to `branch: develop` first.
+3. In Render: **New**, then **Blueprint**. Connect GitHub and give Render access to `Finora-Finance-CA/Finora-API` (an organisation owner may have to approve it).
+4. Pick the repo. Render reads `render.yaml` and shows one web service, `finora-api`, on the free plan, with:
+   - Build command: `npm ci --omit=dev`
+   - Start command: `npm start` (runs `node src/server.js`)
+   - Health check path: `/health`
+   - Node 22, from `.nvmrc` and `engines` in `package.json`
+   - `NODE_ENV=production`
+5. Render asks for the four values marked `sync: false`:
+
+   | Variable | Value |
+   | --- | --- |
+   | `DATABASE_URL` | Supabase **Session pooler** connection string with the password filled in. In Supabase: **Connect**, then **Connection string**, Method **Session pooler**. It looks like `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`. URL-encode special characters in the password. |
+   | `SUPABASE_URL` | `https://<project-id>.supabase.co` |
+   | `SUPABASE_PUBLISHABLE_KEY` | The publishable key (`sb_publishable_...`). Never the secret key. |
+   | `CLIENT_ORIGIN` | `http://localhost:5173` for now. Replaced in step 7. |
+
+   Don't add `PORT`: Render sets it, and the API listens on it on every interface.
+6. Click **Apply**. The first build takes a few minutes. When it's live, open `https://<service>.onrender.com/health`: it should show `{"status":"ok","database":"ok"}`.
+7. After the front-end is deployed: **finora-api**, **Environment**, set `CLIENT_ORIGIN` to the front-end's exact origin, for example `https://finora.vercel.app` (no trailing path). Add more sites with commas, for example `https://finora.vercel.app,http://localhost:5173`. Save; Render restarts the API with the new value.
+
+**Why the Session pooler:** the Direct connection host only has an IPv6 address on Supabase's free plan, and Render can't make IPv6 connections, so a Direct string fails with `ENETUNREACH`. The Session pooler is reachable over IPv4 and behaves like a normal connection. `src/db.js` turns SSL on for every host except localhost (`rejectUnauthorized: false`: encrypted, without checking the certificate chain), which works with the pooler as it already does locally. Don't add `sslmode` to the string.
+
+**Never run on Render:** migrations and the seed. The build and start commands don't run them, `test/deployment.test.js` fails if `render.yaml` ever does, and `npm run seed` refuses to run because `NODE_ENV` is `production`.
+
+### 3. Supabase settings
+1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `005_create_budgets.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
+2. **Auth URLs:** **Authentication**, then **URL Configuration**:
+   - **Site URL:** the front-end's URL, for example `https://finora.vercel.app`.
+   - **Redirect URLs:** add `https://finora.vercel.app/**`, and keep `http://localhost:5173/**` for local development.
+
+   Email confirmation is off, so no email links back to the app today, but Supabase uses these for any confirmation or password-reset link later.
+
+### 4. Verify
+On the live front-end, in a private window:
+
+1. `https://<service>.onrender.com/health` shows `{"status":"ok","database":"ok"}`.
+2. Register a new account at `/register`. You land on Transactions.
+3. Log out, then log in again.
+4. Add an expense and an income. Both appear in Transaction history.
+5. Search for the expense's description and filter by its category. Only it shows.
+6. Open **Summary**: the month's totals include both.
+7. Open **Budgets** and set a limit. "… limit saved" appears.
+8. On `/budgets` (and `/summary?month=2026-09`), do a hard refresh (Ctrl+Shift+R). The page loads again, not a 404.
+9. In DevTools, **Network**: API calls go to `https://<service>.onrender.com/api/...`, and the **Console** has no CORS errors.
+
+If the app says it can't reach the server and the Console shows a CORS error, `CLIENT_ORIGIN` doesn't exactly match the front-end's origin (check `https`, and no trailing slash or path).
+
+### 5. Redeploy and roll back
+- **Redeploy:** merging into the deploy branch (`main`) deploys automatically. To redeploy the same code: **finora-api**, **Manual Deploy**, **Deploy latest commit**. Changing an environment variable restarts the API with it.
+- **Roll back:** **finora-api**, **Events**, find the last good deploy, **Rollback**. Then revert the bad change in Git, or the next merge deploys it again.
+- Rolling back never touches the database. Migrations are only ever added, by hand, so apply a new migration only when the code that needs it is ready to deploy.
+
+### 6. Known limits for demo day
+- **Render free tier cold starts:** the API sleeps after 15 minutes without requests, and the next request takes up to a minute while it wakes. The front-end gives up after 20 seconds with "The server took too long to respond", and **Try again** works once it's awake. **Before the demo:** open `/health` 5 minutes before, and use the app once so it's warm. Free services also share 750 hours a month, which is enough for one service.
+- **Supabase free projects pause** after a week without activity. Every request then fails, and `/health` returns `503`. **The day before the demo:** open the Supabase dashboard; if the project shows **Paused**, click **Restore project** (a few minutes), then check `/health`. Using the app once in the days before keeps it active.
 
 ## Workflow
 - `main` is always stable. Never push directly to it.
