@@ -1,17 +1,27 @@
 import 'dotenv/config';
 import { createApp } from './app.js';
 import { assertSupabaseConfig } from './auth/supabase.js';
+import { parseAllowedOrigins } from './cors.js';
 import { pool } from './db.js';
 
 // Fail at startup rather than on the first authenticated request.
+let allowedOrigins;
 try {
   assertSupabaseConfig();
+  allowedOrigins = parseAllowedOrigins(process.env.CLIENT_ORIGIN);
 } catch (err) {
   console.error(err.message);
   process.exit(1);
 }
 
-const app = createApp();
+// Allowed while deploying: the API goes up before the front-end has a URL.
+if (allowedOrigins.length === 0) {
+  console.warn('CLIENT_ORIGIN is empty, so no website can call the API from a browser yet.');
+}
+
+const app = createApp({ allowedOrigins });
+// Render (and most hosts) set PORT. With no host given, Node listens on every
+// interface, IPv4 and IPv6, which is what the host needs to reach it.
 const port = process.env.PORT || 4000;
 
 // Express 5 passes listen errors (e.g. port already in use) to this callback.

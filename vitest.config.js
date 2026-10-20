@@ -12,6 +12,8 @@ export default defineConfig({
       DATABASE_URL: '',
       SUPABASE_URL: '',
       SUPABASE_PUBLISHABLE_KEY: '',
+      // CORS tests pass their own list to createApp().
+      CLIENT_ORIGIN: '',
     },
     restoreMocks: true,
   },
