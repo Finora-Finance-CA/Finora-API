@@ -30,23 +30,60 @@ export const TRANSACTION_COLUMNS = `
  */
 
 /**
- * Returns a user's most recent transactions, newest first. Rows on the same date are
- * ordered by when they were created, then by id, so the order never changes between calls.
+ * Escapes LIKE's wildcards, so a search for "50%" or "a_b" matches that text exactly.
+ * Used with ESCAPE '\'.
+ *
+ * @param {string} text
+ */
+export function escapeLikePattern(text) {
+  return text.replace(/[\\%_]/g, '\\$&');
+}
+
+// The WHERE clause for one user's transactions with the list's filters, and its
+// parameters. The owner check always comes first and is never optional.
+function listConditions(userId, { q, categories, from, to }) {
+  const params = [userId];
+  const conditions = ['user_id = $1'];
+  const add = (sql, value) => {
+    params.push(value);
+    conditions.push(sql.replace('?', `$${params.length}`));
+  };
+
+  if (q) add(`description ILIKE ? ESCAPE '\\'`, `%${escapeLikePattern(q)}%`);
+  if (categories.length > 0) add('category = ANY(?::text[])', categories);
+  if (from) add('date >= ?', from);
+  if (to) add('date <= ?', to);
+
+  return { where: conditions.join(' AND '), params };
+}
+
+/**
+ * Returns one page of a user's transactions that match the filters, newest first, and
+ * how many match in total. Rows on the same date are ordered by when they were created,
+ * then by id, so the order never changes between calls and pages never overlap.
  *
  * @param {string} userId The owner's id, taken from the verified token.
- * @param {number} limit Maximum number of rows to return.
- * @returns {Promise<object[]>}
+ * @param {import('./validation.js').TransactionListQuery} filters
+ * @param {{ limit: number, offset: number }} page
+ * @returns {Promise<{ transactions: object[], totalCount: number }>}
  */
-export async function listTransactions(userId, limit) {
-  const { rows } = await query(
-    `SELECT ${TRANSACTION_COLUMNS}
-     FROM public.transactions
-     WHERE user_id = $1
-     ORDER BY date DESC, created_at DESC, id DESC
-     LIMIT $2`,
-    [userId, limit]
-  );
-  return rows;
+export async function listTransactions(userId, filters, { limit, offset }) {
+  const { where, params } = listConditions(userId, filters);
+  const limitRef = params.length + 1;
+
+  const [count, page] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS total_count FROM public.transactions WHERE ${where}`, params),
+    query(
+      `SELECT ${TRANSACTION_COLUMNS}
+       FROM public.transactions
+       WHERE ${where}
+       ORDER BY date DESC, created_at DESC, id DESC
+       LIMIT $${limitRef} OFFSET $${limitRef + 1}`,
+      [...params, limit, offset]
+    ),
+  ]);
+
+  return { transactions: page.rows, totalCount: count.rows[0].total_count };
 }
 
 /**

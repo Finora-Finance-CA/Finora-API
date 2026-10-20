@@ -1,8 +1,10 @@
 // In-memory stand-in for src/db.js, installed for every test by test/setup.js.
 //
-// It runs the simple statements the app sends to public.transactions: SELECT, INSERT,
-// UPDATE and DELETE, with `column = $n` and `column = ANY($n)` conditions joined by
-// AND, plus ORDER BY, LIMIT, RETURNING and BEGIN/COMMIT/ROLLBACK. It applies exactly
+// It runs the simple statements the app sends to public.transactions: SELECT (including
+// SELECT COUNT(*)), INSERT, UPDATE and DELETE, with `column = $n`, `column = ANY($n)`,
+// `column >= $n`, `column <= $n`, `column < $n`, `column > $n` and
+// `column ILIKE $n ESCAPE '\'` conditions joined by AND, plus ORDER BY, LIMIT, OFFSET,
+// RETURNING and BEGIN/COMMIT/ROLLBACK. It applies exactly
 // the conditions written in the SQL, so a query that lost its user_id check would
 // expose other users' rows here too and the ownership tests would fail. Any other
 // statement throws, so new SQL fails loudly until it's supported here.
@@ -78,6 +80,33 @@ export function openClientCount() {
 
 const param = (params, ref) => params[Number(ref) - 1];
 
+// A LIKE pattern as a case-insensitive RegExp: % is any text, _ is one character, and
+// a backslash makes the next character literal (ESCAPE '\').
+function likeToRegExp(pattern) {
+  let source = '';
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i];
+    if (char === '\\' && i + 1 < pattern.length) {
+      i += 1;
+      source += pattern[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    } else if (char === '%') {
+      source += '[\\s\\S]*';
+    } else if (char === '_') {
+      source += '[\\s\\S]';
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${source}$`, 'i');
+}
+
+const COMPARISONS = {
+  '>=': (result) => result >= 0,
+  '<=': (result) => result <= 0,
+  '>': (result) => result > 0,
+  '<': (result) => result < 0,
+};
+
 function rowMatcher(where, params) {
   const checks = where.split(/ AND /i).map((condition) => {
     const any = /^(\w+) = ANY\(\$(\d+)(?:::\w+\[\])?\)$/i.exec(condition);
@@ -89,6 +118,18 @@ function rowMatcher(where, params) {
     if (equals) {
       const value = String(param(params, equals[2]));
       return (row) => String(row[equals[1]]) === value;
+    }
+    // Like Postgres, NULL never matches a comparison or a LIKE.
+    const compare = /^(\w+) (>=|<=|>|<) \$(\d+)$/.exec(condition);
+    if (compare) {
+      const [, column, operator, ref] = compare;
+      const value = param(params, ref);
+      return (row) => row[column] !== null && COMPARISONS[operator](compareValues(row[column], value));
+    }
+    const like = /^(\w+) ILIKE \$(\d+) ESCAPE '\\'$/i.exec(condition);
+    if (like) {
+      const pattern = likeToRegExp(param(params, like[2]));
+      return (row) => row[like[1]] !== null && pattern.test(row[like[1]]);
     }
     throw new Error(`Fake database: unsupported condition "${condition}"`);
   });
@@ -140,10 +181,17 @@ function transactionControl([command]) {
   return { rows: [], rowCount: 0 };
 }
 
-function select([columns, where, orderBy, limitRef], params) {
+function select([columns, where, orderBy, limitRef, offsetRef], params) {
   let rows = state.rows.filter(rowMatcher(where, params));
+
+  // SELECT COUNT(*)::int AS name: one row with the number of matches.
+  const count = /^COUNT\(\*\)::int AS (\w+)$/i.exec(columns);
+  if (count) return { rows: [{ [count[1]]: rows.length }], rowCount: 1 };
+
   if (orderBy) rows = [...rows].sort(rowComparator(orderBy));
-  if (limitRef) rows = rows.slice(0, param(params, limitRef));
+  const offset = offsetRef ? param(params, offsetRef) : 0;
+  const end = limitRef ? offset + param(params, limitRef) : undefined;
+  rows = rows.slice(offset, end);
   return { rows: rows.map((row) => pick(row, columns)), rowCount: rows.length };
 }
 
@@ -181,7 +229,10 @@ function remove([where], params) {
 
 const STATEMENTS = [
   [/^(BEGIN|COMMIT|ROLLBACK)$/i, transactionControl],
-  [/^SELECT (.+?) FROM public\.transactions WHERE (.+?)(?: ORDER BY (.+?))?(?: LIMIT \$(\d+))?$/i, select],
+  [
+    /^SELECT (.+?) FROM public\.transactions WHERE (.+?)(?: ORDER BY (.+?))?(?: LIMIT \$(\d+))?(?: OFFSET \$(\d+))?$/i,
+    select,
+  ],
   [/^INSERT INTO public\.transactions \((.+?)\) VALUES (.+?)(?: RETURNING (.+))?$/i, insert],
   [/^UPDATE public\.transactions SET (.+?) WHERE (.+?)(?: RETURNING (.+))?$/i, update],
   [/^DELETE FROM public\.transactions WHERE (.+)$/i, remove],
