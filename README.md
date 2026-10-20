@@ -1,15 +1,646 @@
 # Finora-API
 
-Finora is a finance and budget tracking app built.
+Express API for Finora, a personal finance and budgeting app.
 
 ## Team
-Syed Kazmi, Usayd, Ayaan
+Syed Kazmi, Usayd Jahangiri, Ayaan Sethi
 
 ## Tech Stack
-TBD
+- Node.js 22 and Express
+- PostgreSQL on Supabase, accessed with `pg` (plain SQL, no ORM)
+- Supabase Auth for sign-up and login; the API verifies Supabase access tokens
+- Vitest and Supertest for tests
 
 ## Getting Started
-Setup instructions coming soon.
+
+```bash
+nvm use
+npm install
+cp .env.example .env
+```
+
+On Windows, nvm-windows ignores `.nvmrc`, so run `nvm use 22` instead of `nvm use`. In PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
+
+Fill in `.env` (real values are in the team's credential document):
+
+| Variable | Required | Value |
+| --- | --- | --- |
+| `DATABASE_URL` | Yes | Supabase **Session pooler** connection string, with the password filled in |
+| `SUPABASE_URL` | Yes | `https://<project-id>.supabase.co` |
+| `SUPABASE_PUBLISHABLE_KEY` | Yes | The project's publishable key (`sb_publishable_...`) |
+| `PORT` | No | `4000` (also the default if left empty). The front-end's Vite proxy expects this port. |
+| `CLIENT_ORIGIN` | No | `http://localhost:5173`. Sites allowed to call the API from a browser (see [CORS](#cors)). Not needed locally, because the Vite proxy makes requests same-origin. |
+| `NODE_ENV` | No | Leave unset locally. `production` on Render. |
+
+The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `005_create_budgets.sql`); it only applies files the shared database doesn't have yet.
+
+Then start the server:
+
+```bash
+npm run dev
+```
+
+Check http://localhost:4000/health returns `{ "status": "ok", "database": "ok" }`. If it returns `503`, the API is running but can't reach the database: check `DATABASE_URL`.
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Starts the API and restarts it on save |
+| `npm start` | Starts the API without watching |
+| `npm test` | Runs the tests once (no database or `.env` needed) |
+| `npm run migrate` | Applies any new database migrations |
+| `npm run seed` | Loads two sample users with three months of transactions (see [Sample data](#sample-data)) |
+
+## Switching to Supabase Auth: what to do after pulling
+The temporary JWT auth has been replaced by Supabase Auth. After pulling `develop`:
+
+1. Run `npm install` (`jsonwebtoken` and `bcryptjs` were removed; `@supabase/supabase-js` was added).
+2. In `.env`, delete `JWT_SECRET` and add `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`.
+3. You don't need to run migrations: `003_use_supabase_auth_users.sql` is already applied to the shared database. Running `npm run migrate` is safe and will report nothing new.
+4. `npm run dev:token` no longer exists. To get a token for testing, see "Testing with a real token" below.
+
+Migration `003` moved `transactions.user_id` to reference `auth.users(id)`, dropped our `public.users` table, and deleted old test transactions that belonged to dev-token users.
+
+## Authentication
+Users sign up and log in through Supabase Auth in the front-end. Protected endpoints need the user's Supabase access token:
+
+```http
+Authorization: Bearer <supabase access token>
+```
+
+`src/middleware/requireAuth.js` verifies the token with Supabase (`src/auth/supabaseTokens.js`, using `getClaims`) and sets `req.user = { id }`, where `id` is the token's `sub` claim: the Supabase user id (`auth.users.id`, a UUID). Only tokens for signed-in users (`role` of `authenticated`) are accepted. Routes should always take the user from `req.user.id`, never from the request body.
+
+Missing, invalid, expired or malformed tokens (for example `Bearer abc.def.ghi`) get `401` with `{ "error": "..." }` and a `WWW-Authenticate: Bearer` header. If Supabase can't be reached, the request fails with `500`.
+
+`SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` must be set, or the server will not start. Only the publishable key is used; the secret key must never be added here.
+
+## CORS
+`src/cors.js` uses the `cors` package so that only the sites in `CLIENT_ORIGIN` can call the API from a browser. `CLIENT_ORIGIN` is a comma-separated list of origins (scheme and host only, no path), for example:
+
+```
+CLIENT_ORIGIN=https://finora.vercel.app,http://localhost:5173
+```
+
+- A listed site gets `Access-Control-Allow-Origin` (and `Vary: Origin`) on every response, errors included, so the front-end can read a `401`.
+- Preflight (`OPTIONS`) requests are answered with `204`, allowing `GET`, `POST`, `PUT` and `DELETE` with the `Authorization` and `Content-Type` headers, cached by the browser for 10 minutes.
+- Any other site gets no CORS headers, so the browser blocks it from reading the response.
+- Requests with no `Origin` (curl, Render's health check) work as before. CORS is enforced by browsers only; it is not access control, and every `/api` route still needs a token.
+- An empty `CLIENT_ORIGIN` allows no other site. `*`, a path or a value that isn't an `http(s)` origin stops the server at startup with a message naming the bad entry.
+
+Routes and middleware can throw `HttpError(status, message)`, `UnauthorizedError(message)` or `NotFoundError(message)` from `src/errors.js`, and the central error handler sends `{ "error": message }` with that status.
+
+### Testing with a real token
+1. Run the front-end and log in.
+2. In DevTools → Network, open any `/api/...` request and copy the `Authorization` header value.
+3. Use it with curl:
+
+```bash
+curl -i -X POST http://localhost:4000/api/transactions \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"amount_cents":1250,"date":"2026-10-06","type":"expense","category":"Food"}'
+```
+
+Tokens expire after about an hour. Refresh the front-end to get a new one.
+
+## Database Migrations
+Schema changes are plain SQL files in `db/migrations/`, named `NNN_description.sql` (for example `002_create_transactions.sql`). They are applied in filename order.
+
+Run pending migrations against the database in `DATABASE_URL`:
+
+```bash
+npm run migrate
+```
+
+Each migration runs in its own transaction and is recorded in the `schema_migrations` table, so running the command again only applies new files. If a migration fails, it is rolled back and nothing after it runs.
+
+To add a migration:
+
+1. Create `db/migrations/NNN_description.sql` using the next unused number, lowercase with underscores.
+2. Write plain SQL only. Don't add `BEGIN`/`COMMIT`; the runner wraps each file in a transaction.
+3. Never edit a migration that has already been applied. Add a new one instead.
+
+`src/db.js` exports the shared `pg` pool and a `query(text, params)` helper. SSL is turned on automatically for any host other than localhost. Don't add `sslmode` to `DATABASE_URL`. If the database password contains special characters such as `@`, `#` or `/`, URL-encode them in `DATABASE_URL`.
+
+## Tests
+
+```bash
+npm test
+```
+
+Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never touch the shared database or Supabase, so they need no `.env` and are safe to run any time:
+
+- `test/setup.js` runs before every test file. It replaces `src/db.js` with an in-memory database (`test/support/fakeDatabase.js`) and Supabase token checks with fixed test users (`test/support/fakeAuth.js`), and resets both before each test.
+- `vitest.config.js` also blanks `DATABASE_URL` and the Supabase variables during tests, so anything that slipped past the fakes would fail instead of connecting.
+- HTTP tests use Supertest against `createApp()` from `src/app.js`, with `ALICE` and `BOB` as logged-in users: `request(app).get('/api/transactions').set('Authorization', bearer(ALICE))`.
+- The fake database runs the app's simple SQL on `transactions` and `budgets`: SELECT (with `COUNT(*)`, `SUM(...)` and GROUP BY), INSERT, UPDATE and DELETE, with `=`, `= ANY`, `>=`, `<=`, `<`, `>` and `ILIKE` conditions, plus ORDER BY, LIMIT and OFFSET. It applies exactly the conditions written, so ownership checks and filters are really tested, and it enforces unique constraints with the same `23505` error Postgres gives. Add rows with `addRows(...)` (transactions) or `addRowsTo('budgets', ...)`. A new table, statement or condition throws until it's supported in `fakeDatabase.js`: add a table to `TABLES`, a condition to `CONDITIONS`, or a select-list item to `SELECT_ITEMS`.
+
+| Folder | What it covers |
+| --- | --- |
+| `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures. `listQuery.test.js` covers paging, search, category and date filters together. |
+| `test/summary/` | Monthly totals against hand-worked examples (US-30), month validation, and `/api/summary`: month boundaries, December to January, owner scoping, 400, 401 |
+| `test/budgets/` | Budget validation, and every `/api/budgets` endpoint: success, 400, 401, 404, 409, ownership and database failures |
+| `test/migrations.test.js` | That the constraint names the routes rely on are the ones the migrations create |
+| `test/support/fakeDatabase.test.js` | The fake database's GROUP BY, SUM, COUNT and unique constraints |
+| `test/auth/` | The real token check (not the fake) with malformed tokens: always `401`, never a network call |
+| `test/constants.test.js` | That `CATEGORIES` matches the categories migration 004 seeds |
+| `test/seed/` | The seed script's data, settings, Supabase sign-in/sign-up handling, database writes and the full run |
+| `test/health.test.js` | `/health` with the database up and down |
+| `test/cors.test.js` | Reading `CLIENT_ORIGIN`, and CORS headers and preflight for allowed sites, other sites and requests without an `Origin` |
+| `test/deployment.test.js` | That `render.yaml` builds and starts the API as documented, uses `/health`, sets `NODE_ENV=production`, stores no secrets and never runs migrations or the seed, and that Node is 22 everywhere |
+| `test/setup.test.js` | That the fakes are really installed |
+
+### CI
+`.github/workflows/test.yml` runs `npm ci` and `npm test` on Node 22 (from `.nvmrc`) for every push and every pull request. It needs no secrets. A pull request should only be merged when this check passes.
+
+## Sample data
+
+```bash
+npm run seed
+```
+
+Creates or reuses two sample users and gives each about 28 transactions from the last three months, covering every category plus income. Use them to log in to the front-end and try the app with realistic data.
+
+### Setup
+Add these to `.env` (they're listed in `.env.example`):
+
+| Variable | Value |
+| --- | --- |
+| `SEED_USER_1_EMAIL`, `SEED_USER_2_EMAIL` | Two different addresses you control, for example `you+finora1@gmail.com` and `you+finora2@gmail.com` |
+| `SEED_USER_1_PASSWORD`, `SEED_USER_2_PASSWORD` | At least 8 characters. These are the passwords you'll log in with. |
+
+`DATABASE_URL`, `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` must be set too. Never commit real sample passwords.
+
+### What it does
+1. Refuses to run if `NODE_ENV` is `production`, and stops with a list of any missing variables.
+2. Signs in each sample user through Supabase Auth with the publishable key. If the account doesn't exist yet, it's created with normal sign-up, so email confirmation must be off (it is for this project).
+3. In one database transaction, deletes those two users' transactions and inserts the sample set. If anything fails, nothing is changed.
+4. Prints a summary: each user, whether the account was created or already existed, and how many transactions were loaded.
+
+Running it again gives the same result: the two sample users end up with the same sample transactions (dated relative to today) and nobody else's data is touched. Any changes you made to the sample users' transactions are replaced.
+
+### If it fails
+Every failure prints `Seed failed: ...` with what to do, and exits with code 1 without writing any transactions.
+
+| Message | What to do |
+| --- | --- |
+| `Missing SEED_USER_1_EMAIL, ...` | Add the listed variables to `.env`. |
+| `... already exists, but its password doesn't match` | Put that account's real password in `.env`, or use a different sample email. |
+| `Supabase is rate limiting ...` | Wait a few minutes and run it again. |
+| `Supabase rejected sign up ...` | Supabase's reason follows, for example an email domain it won't accept. Use a different address. |
+| `... has to confirm their email` | Email confirmation was turned on in Supabase. Turn it off, or confirm the address, then run it again. |
+| `Could not reach Supabase ...` | Check `SUPABASE_URL` and your connection. |
+
+## Categories
+The categories are stored in the `public.categories` table (migration `004_create_categories.sql`): `Food`, `Transportation`, `Housing`, `Entertainment` and `Other`, in that order. `transactions.category` is a foreign key to it, so the database itself refuses any other category. An income may have no category.
+
+`CATEGORIES` in `src/constants.js` lists the same names for validation, so a bad category gets a clear `400` before the database is asked. `test/constants.test.js` fails if the list and the migration ever disagree. To change the categories, add a migration and update `CATEGORIES` (and the front-end's copy) together.
+
+## API
+
+All request and response bodies are JSON. Errors use one of two shapes:
+
+- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`.
+- `401`, `404`, `409`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
+
+Every `/api/...` endpoint needs `Authorization: Bearer <supabase access token>`, and only ever reads or changes the logged-in user's own data. Money is always integer cents.
+
+`GET /health` is the one exception, and uses its own shape (below).
+
+### `GET /health`
+Public: no token needed. Checks that the API is running and can reach the database with a read-only `SELECT 1`. The response is never cached.
+
+`200 OK` when the database answers:
+
+```json
+{ "status": "ok", "database": "ok" }
+```
+
+`503 Service Unavailable` when the database can't be reached or takes longer than 3 seconds. The reason is logged by the API, not sent in the response.
+
+```json
+{ "status": "error", "database": "unreachable" }
+```
+
+Supabase Auth is not checked here.
+
+### `GET /api/transactions`
+Lists the logged-in user's transactions, 20 per page, newest first: by `date`, then by when they were created, then by `id`, so the order is stable and pages never overlap. Other users' transactions are never included, in the rows or in the counts.
+
+Headers:
+
+```http
+Authorization: Bearer <supabase access token>
+```
+
+Query parameters, all optional. Any others are ignored.
+
+| Parameter | Rules |
+| --- | --- |
+| `page` | Page number, starting at `1` (the default). A whole number up to `100000`. |
+| `q` | Only transactions whose `description` contains this text, ignoring case. Trimmed; empty means no search. At most 255 characters. `%` and `_` match themselves. |
+| `category` | Only these categories. Repeat it for several: `?category=Food&category=Housing`. Case-sensitive, one of the [categories](#categories). Transactions without a category (income) are left out when this is set. |
+| `from` | Only transactions on or after this date, `YYYY-MM-DD`. |
+| `to` | Only transactions on or before this date, `YYYY-MM-DD`. Must not be before `from`. |
+
+All the filters work together. Example: `GET /api/transactions?q=lunch&category=Food&from=2026-09-01&to=2026-09-30&page=2`.
+
+`200 OK`:
+
+```json
+{
+  "transactions": [
+    {
+      "id": "42",
+      "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "amount_cents": 1250,
+      "date": "2026-10-05",
+      "type": "expense",
+      "category": "Food",
+      "description": "Lunch",
+      "created_at": "2026-10-05T18:30:00.000Z",
+      "updated_at": "2026-10-05T18:30:00.000Z"
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 20, "total_count": 1, "total_pages": 1 }
+}
+```
+
+`total_count` is how many transactions match the filters across every page. When nothing matches, or for a user with no transactions, `transactions` is `[]` and `total_count` and `total_pages` are `0`. A `page` after the last one also gets `[]`, with the real totals.
+
+`400 Bad Request`, listing every invalid parameter at once. No transactions are returned.
+
+```json
+{
+  "errors": {
+    "page": "page must be a whole number from 1 to 100000.",
+    "category": "category must be one of: Food, Transportation, Housing, Entertainment, Other.",
+    "to": "to must be on or after from."
+  }
+}
+```
+
+`page`, `q`, `from` and `to` may each be given only once.
+
+`401 Unauthorized`, when the token is missing, invalid or expired:
+
+```json
+{ "error": "Authentication required. Send an Authorization: Bearer <token> header." }
+```
+
+`500 Internal Server Error`:
+
+```json
+{ "error": "Something went wrong. Please try again later." }
+```
+
+### `POST /api/transactions`
+Creates a transaction for the logged-in user.
+
+Headers:
+
+```http
+Authorization: Bearer <supabase access token>
+Content-Type: application/json
+```
+
+Body:
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `amount_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647. `1250` means $12.50. Decimals and strings are rejected. |
+| `date` | Yes | Real calendar date as `YYYY-MM-DD`, year 1900 or later. |
+| `type` | Yes | `income` or `expense`. |
+| `category` | For `expense` | One of the [categories](#categories) (case-sensitive). Optional for `income`. |
+| `description` | No | String, trimmed, at most 255 characters. Empty becomes `null`. |
+
+Any other fields, including `user_id`, are ignored.
+
+Example request:
+
+```json
+{
+  "amount_cents": 1250,
+  "date": "2026-10-05",
+  "type": "expense",
+  "category": "Food",
+  "description": "Lunch"
+}
+```
+
+`201 Created`:
+
+```json
+{
+  "transaction": {
+    "id": "42",
+    "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+    "amount_cents": 1250,
+    "date": "2026-10-05",
+    "type": "expense",
+    "category": "Food",
+    "description": "Lunch",
+    "created_at": "2026-10-05T18:30:00.000Z",
+    "updated_at": "2026-10-05T18:30:00.000Z"
+  }
+}
+```
+
+`id` is a string because the column is a `BIGINT`.
+
+`400 Bad Request`:
+
+```json
+{
+  "errors": {
+    "amount_cents": "amount_cents must be greater than zero.",
+    "category": "category is required for an expense."
+  }
+}
+```
+
+`401 Unauthorized`, when the token is missing, invalid or expired, or the user's account has since been deleted:
+
+```json
+{ "error": "Authentication required. Send an Authorization: Bearer <token> header." }
+```
+
+`500 Internal Server Error`:
+
+```json
+{ "error": "Something went wrong. Please try again later." }
+```
+
+### `PUT /api/transactions/:id`
+Replaces a transaction owned by the logged-in user. `:id` is the transaction's `id`.
+
+Headers:
+
+```http
+Authorization: Bearer <supabase access token>
+Content-Type: application/json
+```
+
+Body: the same fields and rules as [`POST /api/transactions`](#post-apitransactions). Every field is replaced, so send the whole transaction. An optional field that is left out (`description`, or `category` on an `income`) is cleared to `null`. Any other fields, including `id` and `user_id`, are ignored.
+
+Example request to `PUT /api/transactions/42`:
+
+```json
+{
+  "amount_cents": 1500,
+  "date": "2026-10-05",
+  "type": "expense",
+  "category": "Food",
+  "description": "Lunch and coffee"
+}
+```
+
+`200 OK` with the updated transaction. `updated_at` is set to the time of the update.
+
+```json
+{
+  "transaction": {
+    "id": "42",
+    "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+    "amount_cents": 1500,
+    "date": "2026-10-05",
+    "type": "expense",
+    "category": "Food",
+    "description": "Lunch and coffee",
+    "created_at": "2026-10-05T18:30:00.000Z",
+    "updated_at": "2026-10-06T09:15:00.000Z"
+  }
+}
+```
+
+`400 Bad Request`, listing a bad `id` together with any invalid body fields:
+
+```json
+{
+  "errors": {
+    "id": "id must be a positive whole number.",
+    "amount_cents": "amount_cents must be greater than zero."
+  }
+}
+```
+
+`401 Unauthorized`, when the token is missing, invalid or expired:
+
+```json
+{ "error": "Authentication required. Send an Authorization: Bearer <token> header." }
+```
+
+`404 Not Found`, when no transaction with that id exists or it belongs to another user. The response is the same in both cases, so other users' ids can't be discovered.
+
+```json
+{ "error": "Transaction not found." }
+```
+
+`500 Internal Server Error`:
+
+```json
+{ "error": "Something went wrong. Please try again later." }
+```
+
+### `DELETE /api/transactions/:id`
+Deletes a transaction owned by the logged-in user. `:id` is the transaction's `id`.
+
+Headers:
+
+```http
+Authorization: Bearer <supabase access token>
+```
+
+`204 No Content` on success, with an empty body.
+
+`400 Bad Request`, when `:id` is not a positive whole number:
+
+```json
+{ "errors": { "id": "id must be a positive whole number." } }
+```
+
+`401 Unauthorized`, when the token is missing, invalid or expired:
+
+```json
+{ "error": "Authentication required. Send an Authorization: Bearer <token> header." }
+```
+
+`404 Not Found`, when no transaction with that id exists or it belongs to another user. The response is the same in both cases.
+
+```json
+{ "error": "Transaction not found." }
+```
+
+`500 Internal Server Error`:
+
+```json
+{ "error": "Something went wrong. Please try again later." }
+```
+
+### `GET /api/summary`
+The logged-in user's total income, total expenses and net balance for one month (US-27).
+
+Query parameters:
+
+| Parameter | Required | Rules |
+| --- | --- | --- |
+| `month` | Yes | `YYYY-MM`, for example `2026-10`. Year 1900 or later. Given once. |
+
+The month runs from its first day up to, but not including, the first day of the next month (`date >= '2026-10-01' AND date < '2026-11-01'`). The boundaries come from the text, so time zones can't move them. The API doesn't guess "this month", because it can't know the user's time zone; the front-end sends it.
+
+`200 OK`:
+
+```json
+{
+  "month": "2026-10",
+  "income_cents": 245000,
+  "expense_cents": 199886,
+  "net_cents": 45114,
+  "transaction_count": 4
+}
+```
+
+`net_cents` is `income_cents - expense_cents`, so it's negative when more was spent than earned. A month with no transactions returns zeros.
+
+`400 Bad Request`:
+
+```json
+{ "errors": { "month": "month must be a real month in YYYY-MM format, e.g. 2026-10." } }
+```
+
+Other `400` messages: `month is required, in YYYY-MM format, e.g. 2026-10.`, `month must be in 1900 or later.` and `month must be given only once.`
+
+`401` and `500` as for the other endpoints.
+
+### `GET /api/budgets`
+The logged-in user's budgets: a monthly spending limit per category (US-31). In category order (`Food`, `Transportation`, `Housing`, `Entertainment`, `Other`).
+
+`200 OK`:
+
+```json
+{
+  "budgets": [
+    {
+      "id": "7",
+      "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "category": "Food",
+      "limit_cents": 50000,
+      "created_at": "2026-10-20T14:00:00.000Z",
+      "updated_at": "2026-10-20T14:00:00.000Z"
+    }
+  ]
+}
+```
+
+A user with no budgets gets `{ "budgets": [] }`. `id` is a string because the column is a `BIGINT`.
+
+### `POST /api/budgets`
+Adds a budget. Each user can have one budget per category.
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `category` | Yes | One of the [categories](#categories) (case-sensitive). |
+| `limit_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647. `50000` means $500.00. Zero, negative numbers, decimals and strings are rejected (US-33). |
+
+Any other fields, including `user_id`, are ignored.
+
+`201 Created` with `{ "budget": { ... } }` in the same shape as above.
+
+`400 Bad Request`, listing every invalid field:
+
+```json
+{
+  "errors": {
+    "category": "category must be one of: Food, Transportation, Housing, Entertainment, Other.",
+    "limit_cents": "limit_cents must be greater than zero."
+  }
+}
+```
+
+`409 Conflict`, when the user already has a budget for that category:
+
+```json
+{ "error": "You already have a budget for Food. Change that one instead." }
+```
+
+### `PUT /api/budgets/:id`
+Changes a budget's limit. Only `limit_cents` can change (same rules as above); to move a limit to another category, delete the budget and add a new one. Other fields are ignored.
+
+`200 OK` with `{ "budget": { ... } }`. `updated_at` is set to the time of the update.
+
+`400` for an invalid `limit_cents` or `:id` (both listed at once). `404 Not Found` with `{ "error": "Budget not found." }` when no budget with that id exists or it belongs to another user; the response is the same in both cases.
+
+### `DELETE /api/budgets/:id`
+Deletes a budget. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
+
+## Deployment
+The API runs on **Render** (free web service), set up by `render.yaml` in this repo. The front-end runs on Vercel; see the Deployment section in [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd#deployment). Secret values are only ever typed into the Render dashboard, never committed.
+
+### 1. Order of operations
+1. Check the database (step 3 below): migrations 001 to 005 applied.
+2. Deploy the API on Render (step 2) and note its URL, for example `https://finora-api.onrender.com`.
+3. Deploy the front-end on Vercel with `VITE_API_URL` set to that URL, and note the front-end's URL, for example `https://finora.vercel.app`.
+4. Put the front-end's URL in the API's `CLIENT_ORIGIN` on Render.
+5. Set the Supabase Auth URLs to the front-end's URL (step 3).
+6. Verify (step 4).
+
+### 2. Create the Render service
+1. Decide the region first: it can't be changed later. Find the Supabase project's region in its Session pooler host (`aws-0-<region>.pooler.supabase.com`). Render defaults to `oregon`; if the project is elsewhere, add `region:` under `plan: free` in `render.yaml` (for example `region: virginia` for `us-east-1` or `ca-central-1`) and merge that first.
+2. `render.yaml` deploys the `main` branch. To deploy before `develop` is merged into `main`, change `branch: main` to `branch: develop` first.
+3. In Render: **New**, then **Blueprint**. Connect GitHub and give Render access to `Finora-Finance-CA/Finora-API` (an organisation owner may have to approve it).
+4. Pick the repo. Render reads `render.yaml` and shows one web service, `finora-api`, on the free plan, with:
+   - Build command: `npm ci --omit=dev`
+   - Start command: `npm start` (runs `node src/server.js`)
+   - Health check path: `/health`
+   - Node 22, from `.nvmrc` and `engines` in `package.json`
+   - `NODE_ENV=production`
+5. Render asks for the four values marked `sync: false`:
+
+   | Variable | Value |
+   | --- | --- |
+   | `DATABASE_URL` | Supabase **Session pooler** connection string with the password filled in. In Supabase: **Connect**, then **Connection string**, Method **Session pooler**. It looks like `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`. URL-encode special characters in the password. |
+   | `SUPABASE_URL` | `https://<project-id>.supabase.co` |
+   | `SUPABASE_PUBLISHABLE_KEY` | The publishable key (`sb_publishable_...`). Never the secret key. |
+   | `CLIENT_ORIGIN` | `http://localhost:5173` for now. Replaced in step 7. |
+
+   Don't add `PORT`: Render sets it, and the API listens on it on every interface.
+6. Click **Apply**. The first build takes a few minutes. When it's live, open `https://<service>.onrender.com/health`: it should show `{"status":"ok","database":"ok"}`.
+7. After the front-end is deployed: **finora-api**, **Environment**, set `CLIENT_ORIGIN` to the front-end's exact origin, for example `https://finora.vercel.app` (no trailing path). Add more sites with commas, for example `https://finora.vercel.app,http://localhost:5173`. Save; Render restarts the API with the new value.
+
+**Why the Session pooler:** the Direct connection host only has an IPv6 address on Supabase's free plan, and Render can't make IPv6 connections, so a Direct string fails with `ENETUNREACH`. The Session pooler is reachable over IPv4 and behaves like a normal connection. `src/db.js` turns SSL on for every host except localhost (`rejectUnauthorized: false`: encrypted, without checking the certificate chain), which works with the pooler as it already does locally. Don't add `sslmode` to the string.
+
+**Never run on Render:** migrations and the seed. The build and start commands don't run them, `test/deployment.test.js` fails if `render.yaml` ever does, and `npm run seed` refuses to run because `NODE_ENV` is `production`.
+
+### 3. Supabase settings
+1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `005_create_budgets.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
+2. **Auth URLs:** **Authentication**, then **URL Configuration**:
+   - **Site URL:** the front-end's URL, for example `https://finora.vercel.app`.
+   - **Redirect URLs:** add `https://finora.vercel.app/**`, and keep `http://localhost:5173/**` for local development.
+
+   Email confirmation is off, so no email links back to the app today, but Supabase uses these for any confirmation or password-reset link later.
+
+### 4. Verify
+On the live front-end, in a private window:
+
+1. `https://<service>.onrender.com/health` shows `{"status":"ok","database":"ok"}`.
+2. Register a new account at `/register`. You land on Transactions.
+3. Log out, then log in again.
+4. Add an expense and an income. Both appear in Transaction history.
+5. Search for the expense's description and filter by its category. Only it shows.
+6. Open **Summary**: the month's totals include both.
+7. Open **Budgets** and set a limit. "… limit saved" appears.
+8. On `/budgets` (and `/summary?month=2026-09`), do a hard refresh (Ctrl+Shift+R). The page loads again, not a 404.
+9. In DevTools, **Network**: API calls go to `https://<service>.onrender.com/api/...`, and the **Console** has no CORS errors.
+
+If the app says it can't reach the server and the Console shows a CORS error, `CLIENT_ORIGIN` doesn't exactly match the front-end's origin (check `https`, and no trailing slash or path).
+
+### 5. Redeploy and roll back
+- **Redeploy:** merging into the deploy branch (`main`) deploys automatically. To redeploy the same code: **finora-api**, **Manual Deploy**, **Deploy latest commit**. Changing an environment variable restarts the API with it.
+- **Roll back:** **finora-api**, **Events**, find the last good deploy, **Rollback**. Then revert the bad change in Git, or the next merge deploys it again.
+- Rolling back never touches the database. Migrations are only ever added, by hand, so apply a new migration only when the code that needs it is ready to deploy.
+
+### 6. Known limits for demo day
+- **Render free tier cold starts:** the API sleeps after 15 minutes without requests, and the next request takes up to a minute while it wakes. The front-end gives up after 20 seconds with "The server took too long to respond", and **Try again** works once it's awake. **Before the demo:** open `/health` 5 minutes before, and use the app once so it's warm. Free services also share 750 hours a month, which is enough for one service.
+- **Supabase free projects pause** after a week without activity. Every request then fails, and `/health` returns `503`. **The day before the demo:** open the Supabase dashboard; if the project shows **Paused**, click **Restore project** (a few minutes), then check `/health`. Using the app once in the days before keeps it active.
 
 ## Workflow
 - `main` is always stable. Never push directly to it.
@@ -18,5 +649,3 @@ Setup instructions coming soon.
 
 ## Related Repos
 - [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd)
-
-Ayaan Test!
