@@ -24,6 +24,15 @@ export class UnauthorizedError extends HttpError {
   }
 }
 
+// 409: the request clashes with something the user already has, e.g. a second budget
+// for the same category.
+export class ConflictError extends HttpError {
+  constructor(message = 'That already exists.') {
+    super(409, message);
+    this.name = 'ConflictError';
+  }
+}
+
 // 404: the resource doesn't exist, or it belongs to someone else. Both cases get the
 // same response, so a user can't find out which ids other users have.
 export class NotFoundError extends HttpError {

@@ -31,7 +31,7 @@ Fill in `.env` (real values are in the team's credential document):
 | `PORT` | No | `4000` (also the default if left empty). The front-end's Vite proxy expects this port. |
 | `CLIENT_ORIGIN` | No | `http://localhost:5173`. Not used yet. Reserved for CORS. |
 
-The server will not start without the three required variables. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `004_create_categories.sql`); it only applies files the shared database doesn't have yet.
+The server will not start without the three required variables. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `005_create_budgets.sql`); it only applies files the shared database doesn't have yet.
 
 Then start the server:
 
@@ -118,11 +118,15 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 - `test/setup.js` runs before every test file. It replaces `src/db.js` with an in-memory database (`test/support/fakeDatabase.js`) and Supabase token checks with fixed test users (`test/support/fakeAuth.js`), and resets both before each test.
 - `vitest.config.js` also blanks `DATABASE_URL` and the Supabase variables during tests, so anything that slipped past the fakes would fail instead of connecting.
 - HTTP tests use Supertest against `createApp()` from `src/app.js`, with `ALICE` and `BOB` as logged-in users: `request(app).get('/api/transactions').set('Authorization', bearer(ALICE))`.
-- The fake database runs the app's simple SQL (SELECT, `COUNT(*)`, INSERT, UPDATE and DELETE with `=`, `= ANY`, `>=`, `<=`, `<`, `>` and `ILIKE` conditions, plus ORDER BY, LIMIT and OFFSET) and applies exactly the conditions written, so ownership checks and filters are really tested. A new kind of statement throws until it's supported in `fakeDatabase.js`.
+- The fake database runs the app's simple SQL on `transactions` and `budgets`: SELECT (with `COUNT(*)`, `SUM(...)` and GROUP BY), INSERT, UPDATE and DELETE, with `=`, `= ANY`, `>=`, `<=`, `<`, `>` and `ILIKE` conditions, plus ORDER BY, LIMIT and OFFSET. It applies exactly the conditions written, so ownership checks and filters are really tested, and it enforces unique constraints with the same `23505` error Postgres gives. Add rows with `addRows(...)` (transactions) or `addRowsTo('budgets', ...)`. A new table, statement or condition throws until it's supported in `fakeDatabase.js`: add a table to `TABLES`, a condition to `CONDITIONS`, or a select-list item to `SELECT_ITEMS`.
 
 | Folder | What it covers |
 | --- | --- |
 | `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures. `listQuery.test.js` covers paging, search, category and date filters together. |
+| `test/summary/` | Monthly totals against hand-worked examples (US-30), month validation, and `/api/summary`: month boundaries, December to January, owner scoping, 400, 401 |
+| `test/budgets/` | Budget validation, and every `/api/budgets` endpoint: success, 400, 401, 404, 409, ownership and database failures |
+| `test/migrations.test.js` | That the constraint names the routes rely on are the ones the migrations create |
+| `test/support/fakeDatabase.test.js` | The fake database's GROUP BY, SUM, COUNT and unique constraints |
 | `test/auth/` | The real token check (not the fake) with malformed tokens: always `401`, never a network call |
 | `test/constants.test.js` | That `CATEGORIES` matches the categories migration 004 seeds |
 | `test/seed/` | The seed script's data, settings, Supabase sign-in/sign-up handling, database writes and the full run |
@@ -180,7 +184,9 @@ The categories are stored in the `public.categories` table (migration `004_creat
 All request and response bodies are JSON. Errors use one of two shapes:
 
 - `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`.
-- `401`, `404`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
+- `401`, `404`, `409`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
+
+Every `/api/...` endpoint needs `Authorization: Bearer <supabase access token>`, and only ever reads or changes the logged-in user's own data. Money is always integer cents.
 
 `GET /health` is the one exception, and uses its own shape (below).
 
@@ -453,6 +459,102 @@ Authorization: Bearer <supabase access token>
 ```json
 { "error": "Something went wrong. Please try again later." }
 ```
+
+### `GET /api/summary`
+The logged-in user's total income, total expenses and net balance for one month (US-27).
+
+Query parameters:
+
+| Parameter | Required | Rules |
+| --- | --- | --- |
+| `month` | Yes | `YYYY-MM`, for example `2026-10`. Year 1900 or later. Given once. |
+
+The month runs from its first day up to, but not including, the first day of the next month (`date >= '2026-10-01' AND date < '2026-11-01'`). The boundaries come from the text, so time zones can't move them. The API doesn't guess "this month", because it can't know the user's time zone; the front-end sends it.
+
+`200 OK`:
+
+```json
+{
+  "month": "2026-10",
+  "income_cents": 245000,
+  "expense_cents": 199886,
+  "net_cents": 45114,
+  "transaction_count": 4
+}
+```
+
+`net_cents` is `income_cents - expense_cents`, so it's negative when more was spent than earned. A month with no transactions returns zeros.
+
+`400 Bad Request`:
+
+```json
+{ "errors": { "month": "month must be a real month in YYYY-MM format, e.g. 2026-10." } }
+```
+
+Other `400` messages: `month is required, in YYYY-MM format, e.g. 2026-10.`, `month must be in 1900 or later.` and `month must be given only once.`
+
+`401` and `500` as for the other endpoints.
+
+### `GET /api/budgets`
+The logged-in user's budgets: a monthly spending limit per category (US-31). In category order (`Food`, `Transportation`, `Housing`, `Entertainment`, `Other`).
+
+`200 OK`:
+
+```json
+{
+  "budgets": [
+    {
+      "id": "7",
+      "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "category": "Food",
+      "limit_cents": 50000,
+      "created_at": "2026-10-20T14:00:00.000Z",
+      "updated_at": "2026-10-20T14:00:00.000Z"
+    }
+  ]
+}
+```
+
+A user with no budgets gets `{ "budgets": [] }`. `id` is a string because the column is a `BIGINT`.
+
+### `POST /api/budgets`
+Adds a budget. Each user can have one budget per category.
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `category` | Yes | One of the [categories](#categories) (case-sensitive). |
+| `limit_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647. `50000` means $500.00. Zero, negative numbers, decimals and strings are rejected (US-33). |
+
+Any other fields, including `user_id`, are ignored.
+
+`201 Created` with `{ "budget": { ... } }` in the same shape as above.
+
+`400 Bad Request`, listing every invalid field:
+
+```json
+{
+  "errors": {
+    "category": "category must be one of: Food, Transportation, Housing, Entertainment, Other.",
+    "limit_cents": "limit_cents must be greater than zero."
+  }
+}
+```
+
+`409 Conflict`, when the user already has a budget for that category:
+
+```json
+{ "error": "You already have a budget for Food. Change that one instead." }
+```
+
+### `PUT /api/budgets/:id`
+Changes a budget's limit. Only `limit_cents` can change (same rules as above); to move a limit to another category, delete the budget and add a new one. Other fields are ignored.
+
+`200 OK` with `{ "budget": { ... } }`. `updated_at` is set to the time of the update.
+
+`400` for an invalid `limit_cents` or `:id` (both listed at once). `404 Not Found` with `{ "error": "Budget not found." }` when no budget with that id exists or it belongs to another user; the response is the same in both cases.
+
+### `DELETE /api/budgets/:id`
+Deletes a budget. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
 
 ## Workflow
 - `main` is always stable. Never push directly to it.
