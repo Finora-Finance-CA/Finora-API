@@ -31,7 +31,7 @@ Fill in `.env` (real values are in the team's credential document):
 | `PORT` | No | `4000` (also the default if left empty). The front-end's Vite proxy expects this port. |
 | `CLIENT_ORIGIN` | No | `http://localhost:5173`. Not used yet. Reserved for CORS. |
 
-The server will not start without the three required variables. The shared database is already migrated, so you don't need to run `npm run migrate` to get started.
+The server will not start without the three required variables. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `004_create_categories.sql`); it only applies files the shared database doesn't have yet.
 
 Then start the server:
 
@@ -68,7 +68,7 @@ Authorization: Bearer <supabase access token>
 
 `src/middleware/requireAuth.js` verifies the token with Supabase (`src/auth/supabaseTokens.js`, using `getClaims`) and sets `req.user = { id }`, where `id` is the token's `sub` claim: the Supabase user id (`auth.users.id`, a UUID). Only tokens for signed-in users (`role` of `authenticated`) are accepted. Routes should always take the user from `req.user.id`, never from the request body.
 
-Missing, invalid or expired tokens get `401` with `{ "error": "..." }` and a `WWW-Authenticate: Bearer` header. If Supabase can't be reached, the request fails with `500`.
+Missing, invalid, expired or malformed tokens (for example `Bearer abc.def.ghi`) get `401` with `{ "error": "..." }` and a `WWW-Authenticate: Bearer` header. If Supabase can't be reached, the request fails with `500`.
 
 `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` must be set, or the server will not start. Only the publishable key is used; the secret key must never be added here.
 
@@ -118,11 +118,13 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 - `test/setup.js` runs before every test file. It replaces `src/db.js` with an in-memory database (`test/support/fakeDatabase.js`) and Supabase token checks with fixed test users (`test/support/fakeAuth.js`), and resets both before each test.
 - `vitest.config.js` also blanks `DATABASE_URL` and the Supabase variables during tests, so anything that slipped past the fakes would fail instead of connecting.
 - HTTP tests use Supertest against `createApp()` from `src/app.js`, with `ALICE` and `BOB` as logged-in users: `request(app).get('/api/transactions').set('Authorization', bearer(ALICE))`.
-- The fake database runs the app's simple SQL (SELECT, INSERT, UPDATE and DELETE with `column = $n` conditions) and applies exactly the conditions written, so ownership checks are really tested. A new kind of statement throws until it's supported in `fakeDatabase.js`.
+- The fake database runs the app's simple SQL (SELECT, `COUNT(*)`, INSERT, UPDATE and DELETE with `=`, `= ANY`, `>=`, `<=`, `<`, `>` and `ILIKE` conditions, plus ORDER BY, LIMIT and OFFSET) and applies exactly the conditions written, so ownership checks and filters are really tested. A new kind of statement throws until it's supported in `fakeDatabase.js`.
 
 | Folder | What it covers |
 | --- | --- |
-| `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures |
+| `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures. `listQuery.test.js` covers paging, search, category and date filters together. |
+| `test/auth/` | The real token check (not the fake) with malformed tokens: always `401`, never a network call |
+| `test/constants.test.js` | That `CATEGORIES` matches the categories migration 004 seeds |
 | `test/seed/` | The seed script's data, settings, Supabase sign-in/sign-up handling, database writes and the full run |
 | `test/health.test.js` | `/health` with the database up and down |
 | `test/setup.test.js` | That the fakes are really installed |
@@ -168,6 +170,11 @@ Every failure prints `Seed failed: ...` with what to do, and exits with code 1 w
 | `... has to confirm their email` | Email confirmation was turned on in Supabase. Turn it off, or confirm the address, then run it again. |
 | `Could not reach Supabase ...` | Check `SUPABASE_URL` and your connection. |
 
+## Categories
+The categories are stored in the `public.categories` table (migration `004_create_categories.sql`): `Food`, `Transportation`, `Housing`, `Entertainment` and `Other`, in that order. `transactions.category` is a foreign key to it, so the database itself refuses any other category. An income may have no category.
+
+`CATEGORIES` in `src/constants.js` lists the same names for validation, so a bad category gets a clear `400` before the database is asked. `test/constants.test.js` fails if the list and the migration ever disagree. To change the categories, add a migration and update `CATEGORIES` (and the front-end's copy) together.
+
 ## API
 
 All request and response bodies are JSON. Errors use one of two shapes:
@@ -195,13 +202,25 @@ Public: no token needed. Checks that the API is running and can reach the databa
 Supabase Auth is not checked here.
 
 ### `GET /api/transactions`
-Lists the logged-in user's 50 most recent transactions, newest first: by `date`, then by when they were created. Other users' transactions are never included. Paging, search and filters are not supported yet (Sprint 2).
+Lists the logged-in user's transactions, 20 per page, newest first: by `date`, then by when they were created, then by `id`, so the order is stable and pages never overlap. Other users' transactions are never included, in the rows or in the counts.
 
 Headers:
 
 ```http
 Authorization: Bearer <supabase access token>
 ```
+
+Query parameters, all optional. Any others are ignored.
+
+| Parameter | Rules |
+| --- | --- |
+| `page` | Page number, starting at `1` (the default). A whole number up to `100000`. |
+| `q` | Only transactions whose `description` contains this text, ignoring case. Trimmed; empty means no search. At most 255 characters. `%` and `_` match themselves. |
+| `category` | Only these categories. Repeat it for several: `?category=Food&category=Housing`. Case-sensitive, one of the [categories](#categories). Transactions without a category (income) are left out when this is set. |
+| `from` | Only transactions on or after this date, `YYYY-MM-DD`. |
+| `to` | Only transactions on or before this date, `YYYY-MM-DD`. Must not be before `from`. |
+
+All the filters work together. Example: `GET /api/transactions?q=lunch&category=Food&from=2026-09-01&to=2026-09-30&page=2`.
 
 `200 OK`:
 
@@ -219,11 +238,26 @@ Authorization: Bearer <supabase access token>
       "created_at": "2026-10-05T18:30:00.000Z",
       "updated_at": "2026-10-05T18:30:00.000Z"
     }
-  ]
+  ],
+  "pagination": { "page": 1, "page_size": 20, "total_count": 1, "total_pages": 1 }
 }
 ```
 
-A user with no transactions gets `{ "transactions": [] }`.
+`total_count` is how many transactions match the filters across every page. When nothing matches, or for a user with no transactions, `transactions` is `[]` and `total_count` and `total_pages` are `0`. A `page` after the last one also gets `[]`, with the real totals.
+
+`400 Bad Request`, listing every invalid parameter at once. No transactions are returned.
+
+```json
+{
+  "errors": {
+    "page": "page must be a whole number from 1 to 100000.",
+    "category": "category must be one of: Food, Transportation, Housing, Entertainment, Other.",
+    "to": "to must be on or after from."
+  }
+}
+```
+
+`page`, `q`, `from` and `to` may each be given only once.
 
 `401 Unauthorized`, when the token is missing, invalid or expired:
 
@@ -254,7 +288,7 @@ Body:
 | `amount_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647. `1250` means $12.50. Decimals and strings are rejected. |
 | `date` | Yes | Real calendar date as `YYYY-MM-DD`, year 1900 or later. |
 | `type` | Yes | `income` or `expense`. |
-| `category` | For `expense` | One of `Food`, `Transportation`, `Housing`, `Entertainment`, `Other` (case-sensitive). Optional for `income`. |
+| `category` | For `expense` | One of the [categories](#categories) (case-sensitive). Optional for `income`. |
 | `description` | No | String, trimmed, at most 255 characters. Empty becomes `null`. |
 
 Any other fields, including `user_id`, are ignored.

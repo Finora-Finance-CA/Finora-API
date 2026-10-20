@@ -12,6 +12,12 @@ const app = createApp();
 const EXPENSE = { amount_cents: 1250, date: '2026-10-05', type: 'expense', category: 'Food', description: 'Lunch' };
 const NOT_FOUND = { error: 'Transaction not found.' };
 const SERVER_ERROR = { error: 'Something went wrong. Please try again later.' };
+const CATEGORY_ERROR = 'category must be one of: Food, Transportation, Housing, Entertainment, Other.';
+// What pg raises when transactions_category_fkey (migration 004) rejects a row.
+const CATEGORY_FK_ERROR = Object.assign(new Error('violates foreign key constraint "transactions_category_fkey"'), {
+  code: '23503',
+  constraint: 'transactions_category_fkey',
+});
 
 function rowFor(user, changes = {}) {
   return { user_id: user.id, ...EXPENSE, ...changes };
@@ -103,16 +109,17 @@ describe('GET /api/transactions', () => {
     expect(response.body.transactions.every((t) => t.user_id === ALICE.id)).toBe(true);
   });
 
-  it('returns at most the 50 most recent transactions', async () => {
-    const rows = Array.from({ length: 55 }, (_, day) =>
-      rowFor(ALICE, { date: `2026-08-${String((day % 28) + 1).padStart(2, '0')}`, description: `t${day}` })
+  it('returns the first page of 20 most recent transactions by default', async () => {
+    const rows = Array.from({ length: 25 }, (_, day) =>
+      rowFor(ALICE, { date: `2026-08-${String(day + 1).padStart(2, '0')}`, description: `t${day}` })
     );
     addRows(...rows);
 
     const response = await as(ALICE).list();
 
-    const newestFiftyDates = rows.map((row) => row.date).sort().reverse().slice(0, 50);
-    expect(response.body.transactions.map((t) => t.date)).toEqual(newestFiftyDates);
+    const newestTwentyDates = rows.map((row) => row.date).sort().reverse().slice(0, 20);
+    expect(response.body.transactions.map((t) => t.date)).toEqual(newestTwentyDates);
+    expect(response.body.pagination).toEqual({ page: 1, page_size: 20, total_count: 25, total_pages: 2 });
   });
 
   it('returns an empty list for a user with no transactions', async () => {
@@ -121,7 +128,10 @@ describe('GET /api/transactions', () => {
     const response = await as(ALICE).list();
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ transactions: [] });
+    expect(response.body).toEqual({
+      transactions: [],
+      pagination: { page: 1, page_size: 20, total_count: 0, total_pages: 0 },
+    });
   });
 });
 
@@ -180,6 +190,23 @@ describe('POST /api/transactions', () => {
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({ errors: { body: 'Request body must be valid JSON.' } });
+  });
+
+  it('returns 400 for a category that is not in the list, without touching the database', async () => {
+    const response = await as(ALICE).create({ ...EXPENSE, category: 'Groceries' });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ errors: { category: CATEGORY_ERROR } });
+    expect(recordedQueries()).toEqual([]);
+  });
+
+  it('returns 400, not 500, when the categories table rejects the category', async () => {
+    failNextQuery(CATEGORY_FK_ERROR);
+
+    const response = await as(ALICE).create(EXPENSE);
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ errors: { category: CATEGORY_ERROR } });
   });
 
   it('returns 401 when the user behind a valid token no longer exists', async () => {
@@ -256,6 +283,17 @@ describe('PUT /api/transactions/:id', () => {
         type: 'type must be one of: income, expense.',
       },
     });
+    expect(storedRows()).toEqual([row]);
+  });
+
+  it('returns 400, not 500, when the categories table rejects the category, and changes nothing', async () => {
+    const [row] = addRows(rowFor(ALICE));
+    failNextQuery(CATEGORY_FK_ERROR);
+
+    const response = await as(ALICE).update(row.id, CHANGES);
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ errors: { category: CATEGORY_ERROR } });
     expect(storedRows()).toEqual([row]);
   });
 
@@ -336,8 +374,9 @@ describe('ownership in every query', () => {
     await as(ALICE).update(row.id, body);
     await as(ALICE).remove(row.id);
 
+    // The list sends two statements: the count and the page.
     const queries = recordedQueries();
-    expect(queries).toHaveLength(4);
+    expect(queries).toHaveLength(5);
     for (const { params } of queries) {
       expect(params).toContain(ALICE.id);
       expect(params).not.toContain(BOB.id);

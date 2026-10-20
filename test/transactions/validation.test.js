@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_AMOUNT_CENTS,
   MAX_DESCRIPTION_LENGTH,
+  MAX_PAGE,
+  MAX_SEARCH_LENGTH,
+  validateListQuery,
   validateTransactionBody,
   validateTransactionId,
 } from '../../src/transactions/validation.js';
@@ -164,5 +167,79 @@ describe('validateTransactionId', () => {
     ['missing', undefined],
   ])('rejects %s', (_, id) => {
     expect(validateTransactionId(id)).toBe('id must be a positive whole number.');
+  });
+});
+
+describe('validateListQuery', () => {
+  const NO_FILTERS = { page: 1, q: null, categories: [], from: null, to: null };
+
+  it('defaults to the first page with no filters', () => {
+    expect(validateListQuery({})).toEqual({ errors: null, value: NO_FILTERS });
+    expect(validateListQuery()).toEqual({ errors: null, value: NO_FILTERS });
+  });
+
+  it('returns cleaned values for every filter', () => {
+    expect(
+      validateListQuery({ page: '3', q: '  Lunch ', category: ['Housing', 'Food', 'Food'], from: '2026-09-01', to: '2026-09-30' })
+    ).toEqual({
+      errors: null,
+      value: { page: 3, q: 'Lunch', categories: ['Food', 'Housing'], from: '2026-09-01', to: '2026-09-30' },
+    });
+  });
+
+  it('accepts a single category as a string', () => {
+    expect(validateListQuery({ category: 'Other' }).value.categories).toEqual(['Other']);
+  });
+
+  it.each([
+    ['an empty page', { page: '' }],
+    ['an empty search', { q: '' }],
+    ['a blank search', { q: '   ' }],
+    ['an empty category', { category: '' }],
+    ['empty dates', { from: '', to: '' }],
+  ])('treats %s as not given', (_, query) => {
+    expect(validateListQuery(query)).toEqual({ errors: null, value: NO_FILTERS });
+  });
+
+  it.each(['1', String(MAX_PAGE)])('accepts page %s', (page) => {
+    expect(validateListQuery({ page }).errors).toBeNull();
+  });
+
+  it.each(['0', '-2', '1.0', '1e2', ' 1', '01', String(MAX_PAGE + 1)])('rejects page %s', (page) => {
+    expect(validateListQuery({ page }).errors).toEqual({ page: `page must be a whole number from 1 to ${MAX_PAGE}.` });
+  });
+
+  it('accepts a search of exactly the limit and rejects one character more', () => {
+    expect(validateListQuery({ q: 'x'.repeat(MAX_SEARCH_LENGTH) }).errors).toBeNull();
+    expect(validateListQuery({ q: 'x'.repeat(MAX_SEARCH_LENGTH + 1) }).errors).toEqual({
+      q: `q must be at most ${MAX_SEARCH_LENGTH} characters.`,
+    });
+  });
+
+  it.each([
+    ['page', { page: ['1', '2'] }],
+    ['q', { q: ['a', 'b'] }],
+    ['from', { from: ['2026-01-01', '2026-02-01'] }],
+    ['to', { to: ['2026-01-01', '2026-02-01'] }],
+  ])('rejects %s given more than once', (field, query) => {
+    expect(validateListQuery(query).errors).toEqual({ [field]: `${field} must be given only once.` });
+  });
+
+  it('rejects a nested object, as ?q[a]=b might parse to', () => {
+    expect(validateListQuery({ q: { a: 'b' } }).errors).toEqual({ q: 'q must be text.' });
+    expect(validateListQuery({ category: { a: 'b' } }).errors).toEqual({ category: 'category must be text.' });
+  });
+
+  it('allows from and to on the same day, and rejects to before from', () => {
+    expect(validateListQuery({ from: '2026-09-15', to: '2026-09-15' }).errors).toBeNull();
+    expect(validateListQuery({ from: '2026-09-16', to: '2026-09-15' }).errors).toEqual({
+      to: 'to must be on or after from.',
+    });
+  });
+
+  it('does not compare the range when one end is already invalid', () => {
+    expect(validateListQuery({ from: '2026-13-01', to: '2026-01-01' }).errors).toEqual({
+      from: 'from must be a real calendar date.',
+    });
   });
 });
