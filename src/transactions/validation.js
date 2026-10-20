@@ -2,13 +2,12 @@
 // list's query string. Pure functions with no Express or database dependencies, so
 // they can be unit tested directly.
 
-import { CATEGORIES, MAX_AMOUNT_CENTS, TRANSACTION_TYPES } from '../constants.js';
+import { CATEGORIES, MAX_AMOUNT_CENTS, MIN_YEAR, TRANSACTION_TYPES } from '../constants.js';
 
 // Re-exported so existing imports from this module keep working.
-export { CATEGORIES, MAX_AMOUNT_CENTS, TRANSACTION_TYPES };
+export { CATEGORIES, MAX_AMOUNT_CENTS, MIN_YEAR, TRANSACTION_TYPES };
 
 export const MAX_DESCRIPTION_LENGTH = 255;
-export const MIN_YEAR = 1900;
 // Search text is matched against descriptions, so it can't usefully be longer.
 export const MAX_SEARCH_LENGTH = MAX_DESCRIPTION_LENGTH;
 // Far beyond any real history at 20 per page; stops absurd OFFSETs reaching Postgres.
@@ -26,13 +25,21 @@ function isMissing(value) {
   return value === undefined || value === null || value === '';
 }
 
-function validateAmountCents(value) {
-  if (isMissing(value)) return 'amount_cents is required.';
+/**
+ * Checks a money amount in integer cents that must be above zero and fit an INTEGER
+ * column: a transaction's amount_cents or a budget's limit_cents.
+ *
+ * @param {unknown} value
+ * @param {string} [field] Named in the message.
+ * @returns {string|null} An error message, or null if it's valid.
+ */
+export function validatePositiveCents(value, field = 'amount_cents') {
+  if (isMissing(value)) return `${field} is required.`;
   if (typeof value !== 'number' || !Number.isInteger(value)) {
-    return 'amount_cents must be a whole number of cents, e.g. 1250 for $12.50.';
+    return `${field} must be a whole number of cents, e.g. 1250 for $12.50.`;
   }
-  if (value <= 0) return 'amount_cents must be greater than zero.';
-  if (value > MAX_AMOUNT_CENTS) return `amount_cents must be at most ${MAX_AMOUNT_CENTS}.`;
+  if (value <= 0) return `${field} must be greater than zero.`;
+  if (value > MAX_AMOUNT_CENTS) return `${field} must be at most ${MAX_AMOUNT_CENTS}.`;
   return null;
 }
 
@@ -108,7 +115,7 @@ export function validateTransactionBody(body) {
 
   const { amount_cents, date, type, category, description } = body;
   const checks = {
-    amount_cents: validateAmountCents(amount_cents),
+    amount_cents: validatePositiveCents(amount_cents),
     date: validateDate(date),
     type: validateType(type),
     category: validateCategory(category, type),
