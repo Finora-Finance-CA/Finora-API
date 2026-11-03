@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { ALICE, BOB, bearer } from '../support/fakeAuth.js';
 import { addRowsTo, failNextQuery, recordedQueries, storedRowsIn } from '../support/fakeDatabase.js';
+import { expectEveryStatementOwnedBy } from '../support/ownership.js';
 
 const app = createApp();
 
@@ -295,9 +296,8 @@ describe('ownership in every goal query', () => {
 
     const queries = recordedQueries();
     expect(queries).toHaveLength(4);
-    for (const { sql, params } of queries) {
-      expect(sql).toMatch(/user_id/);
-      expect(params).toContain(ALICE.id);
+    expectEveryStatementOwnedBy(queries, ALICE.id);
+    for (const { params } of queries) {
       expect(params).not.toContain(BOB.id);
     }
   });

@@ -73,6 +73,34 @@ Missing, invalid, expired or malformed tokens (for example `Bearer abc.def.ghi`)
 
 `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` must be set, or the server will not start. Only the publishable key is used; the secret key must never be added here.
 
+## Data privacy
+Every user sees and changes only their own transactions, budgets and goals (US-45). Three things make sure of it:
+
+1. **A token on every `/api` request.** Each router starts with `router.use(requireAuth)`, so a request without a valid token gets `401` before any route runs. `GET /health` is the only public route.
+2. **The owner check in the SQL.** The user id comes only from the verified token (`req.user.id`), never from the body, the query string or the URL. Every repository function takes it first, and every statement on a user's table is limited to that user: `WHERE ... AND user_id = $n` on every SELECT, UPDATE and DELETE, and `user_id` set from the token on every INSERT. Another user's record therefore can't be found: `PUT` and `DELETE` return `404`, with exactly the same body as an id that doesn't exist, so nobody can tell which ids other users have.
+3. **Row level security on every table.** Supabase also exposes the database through its own REST API. Every table has RLS turned on with no policies, which blocks that API completely. The Finora API connects directly with `DATABASE_URL` and isn't affected.
+
+| Endpoint | Owner check |
+| --- | --- |
+| `GET /api/transactions` | `WHERE user_id = $1` on the count and the page |
+| `POST /api/transactions` | `user_id` from the token |
+| `PUT`, `DELETE /api/transactions/:id` | `WHERE id = $1 AND user_id = $2`; otherwise `404` |
+| `GET /api/summary` | `WHERE user_id = $1` |
+| `GET /api/budgets`, `GET /api/budgets/status` | `WHERE user_id = $1` on the budgets and on the spending |
+| `POST /api/budgets` | `user_id` from the token |
+| `PUT`, `DELETE /api/budgets/:id` | `WHERE id = $1 AND user_id = $2`; otherwise `404` |
+| `GET /api/goals` | `WHERE user_id = $1` |
+| `POST /api/goals` | `user_id` from the token |
+| `PUT`, `DELETE /api/goals/:id` | `WHERE id = $1 AND user_id = $2`; otherwise `404` |
+
+Rules for new code (tests fail if they're broken):
+
+- **A new router** starts with `router.use(requireAuth)`. `test/privacy/routeAuth.test.js` reads every route from the app and fails if one under `/api` answers without a token. Only `/health` is on its public list.
+- **A new table** that holds a user's data has a `user_id` column, and its migration ends with `ALTER TABLE public.<table> ENABLE ROW LEVEL SECURITY;`. The integration tests fail if any table in `public` has RLS off. Add the table to `USER_TABLES` in `test/support/ownership.js` too, so the owner check is enforced on its queries.
+- **Every query** on such a table has `user_id = $n` in its WHERE clause (or sets `user_id` on INSERT). `expectEveryStatementOwnedBy()` in `test/support/ownership.js` checks this for every statement a test sends; naming `user_id` only in the returned columns doesn't count.
+
+Known limit: a Supabase access token stays valid until it expires (about an hour), even after the user logs out, because the check reads the signed token rather than asking Supabase whether the session still exists. Logging out removes the token from the browser, so this only matters if a token was copied before logout.
+
 ## CORS
 `src/cors.js` uses the `cors` package so that only the sites in `CLIENT_ORIGIN` can call the API from a browser. `CLIENT_ORIGIN` is a comma-separated list of origins (scheme and host only, no path), for example:
 
@@ -139,9 +167,10 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 | `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures. `listQuery.test.js` covers paging, search, category and date filters together. |
 | `test/summary/` | Monthly totals against hand-worked examples (US-30), month validation, and `/api/summary`: month boundaries, December to January, owner scoping, 400, 401 |
 | `test/budgets/` | Budget validation; spent, remaining and percent used against hand-worked examples, including the 80% and 100% boundaries (US-35); and every `/api/budgets` endpoint, including `/status`: success, 400, 401, 404, 409, month boundaries, ownership and database failures |
+| `test/privacy/` | US-45, US-46: as `BOB`, every endpoint on `ALICE`'s transaction, budget and goal (lists, summary, budget status, `PUT`, `DELETE`, `user_id` in the body) without seeing or changing them; every `/api` route read from the app returns `401` without a valid token; an undecodable `:id` like `%ZZ` returns `400` on every route |
 | `test/goals/` | Goal validation, BIGINT amounts read back as numbers, and every `/api/goals` endpoint: success, 400, 401, 404, ignored `user_id` and `saved_cents`, ownership and database failures |
 | `test/migrations.test.js` | That the constraint names the routes rely on are the ones the migrations create |
-| `test/support/fakeDatabase.test.js` | The fake database's GROUP BY, SUM, COUNT and unique constraints |
+| `test/support/` | The fake database's GROUP BY, SUM, COUNT and unique constraints; that the owner check (`ownership.js`) catches a statement without `user_id = $n`; and the integration tests' database guard |
 | `test/auth/` | The real token check (not the fake) with malformed tokens: always `401`, never a network call |
 | `test/constants.test.js` | That `CATEGORIES` matches the categories migration 004 seeds |
 | `test/seed/` | The seed script's data, settings, Supabase sign-in/sign-up handling, database writes and the full run |
@@ -150,8 +179,28 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 | `test/deployment.test.js` | That `render.yaml` builds and starts the API as documented, uses `/health`, sets `NODE_ENV=production`, stores no secrets and never runs migrations or the seed, and that Node is 22 everywhere |
 | `test/setup.test.js` | That the fakes are really installed |
 
+### Integration tests
+The tests above run on an in-memory stand-in for Postgres. `npm run test:integration` runs the API on a real Postgres instead, to prove the SQL itself: the cross-user checks from `test/privacy/` (in `test/integration/crossUser.test.js`), budget status totals with month boundaries and totals larger than one `INTEGER`, goals with their `BIGINT` amounts and constraints, and RLS on every table (`test/integration/realSql.test.js`).
+
+They need a throwaway Postgres on this machine, because they **wipe the database they use** and rebuild it: they drop the `public` and `auth` schemas, add a minimal `auth.users` with the two test users, and apply every migration with `scripts/migrate.js`. `npm test` never runs them.
+
+```bash
+docker run -d --rm --name finora-integration-test -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=finora_test -p 127.0.0.1:5433:5432 postgres:16
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/finora_test npm run test:integration
+docker stop finora-integration-test
+```
+
+(In PowerShell, set the variable first: `$env:TEST_DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/finora_test"`.)
+
+`TEST_DATABASE_URL` is checked before anything else (`test/support/testDatabaseGuard.js`): the tests refuse to start unless its host is `localhost` or `127.0.0.1` and its database name contains `test`. It becomes `DATABASE_URL` for the tests, so `.env` (which points at the shared Supabase database) is never read for it. Never set `TEST_DATABASE_URL` to the Supabase connection string. The Supabase token check is still faked, as in the unit tests.
+
 ### CI
-`.github/workflows/test.yml` runs `npm ci` and `npm test` on Node 22 (from `.nvmrc`) for every push and every pull request. It needs no secrets. A pull request should only be merged when this check passes.
+`.github/workflows/test.yml` runs two jobs on Node 22 (from `.nvmrc`) for every push and every pull request, with no secrets:
+
+- `test`: `npm ci` and `npm test`.
+- `integration`: `npm ci` and `npm run test:integration`, with a `postgres:16` service container on `localhost`.
+
+A pull request should only be merged when both pass.
 
 ## Sample data
 
@@ -200,10 +249,10 @@ The categories are stored in the `public.categories` table (migration `004_creat
 
 All request and response bodies are JSON. Errors use one of two shapes:
 
-- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`.
+- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`, including one that can't be decoded, like `%ZZ`.
 - `401`, `404`, `409`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
 
-Every `/api/...` endpoint needs `Authorization: Bearer <supabase access token>`, and only ever reads or changes the logged-in user's own data. Money is always integer cents.
+Every `/api/...` endpoint needs `Authorization: Bearer <supabase access token>`, and only ever reads or changes the logged-in user's own data (see [Data privacy](#data-privacy)). Money is always integer cents.
 
 `GET /health` is the one exception, and uses its own shape (below).
 

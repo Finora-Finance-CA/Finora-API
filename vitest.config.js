@@ -1,8 +1,11 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
     include: ['test/**/*.test.js'],
+    // The integration tests need a real local Postgres and run only with
+    // npm run test:integration (vitest.integration.config.js).
+    exclude: [...configDefaults.exclude, 'test/integration/**'],
     // Swaps the database and Supabase token check for in-memory fakes before any app
     // code loads, and resets them before each test.
     setupFiles: ['test/setup.js'],
