@@ -138,7 +138,7 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 | --- | --- |
 | `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures. `listQuery.test.js` covers paging, search, category and date filters together. |
 | `test/summary/` | Monthly totals against hand-worked examples (US-30), month validation, and `/api/summary`: month boundaries, December to January, owner scoping, 400, 401 |
-| `test/budgets/` | Budget validation, and every `/api/budgets` endpoint: success, 400, 401, 404, 409, ownership and database failures |
+| `test/budgets/` | Budget validation; spent, remaining and percent used against hand-worked examples, including the 80% and 100% boundaries (US-35); and every `/api/budgets` endpoint, including `/status`: success, 400, 401, 404, 409, month boundaries, ownership and database failures |
 | `test/migrations.test.js` | That the constraint names the routes rely on are the ones the migrations create |
 | `test/support/fakeDatabase.test.js` | The fake database's GROUP BY, SUM, COUNT and unique constraints |
 | `test/auth/` | The real token check (not the fake) with malformed tokens: always `401`, never a network call |
@@ -571,6 +571,62 @@ Changes a budget's limit. Only `limit_cents` can change (same rules as above); t
 
 ### `DELETE /api/budgets/:id`
 Deletes a budget. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
+
+### `GET /api/budgets/status`
+How much the logged-in user has spent against each of their budgets in one month (US-35). Only expenses count: an income is never counted, even if it has a category.
+
+Query parameters: `month`, required, with the same rules and the same month boundaries as [`GET /api/summary`](#get-apisummary).
+
+`200 OK`, with one entry per budget, in category order:
+
+```json
+{
+  "month": "2026-10",
+  "budgets": [
+    {
+      "id": "7",
+      "category": "Food",
+      "limit_cents": 50000,
+      "spent_cents": 40487,
+      "remaining_cents": 9513,
+      "percent_used": 80,
+      "status": "warning"
+    },
+    {
+      "id": "8",
+      "category": "Transportation",
+      "limit_cents": 15000,
+      "spent_cents": 17315,
+      "remaining_cents": -2315,
+      "percent_used": 115,
+      "status": "over"
+    },
+    {
+      "id": "9",
+      "category": "Entertainment",
+      "limit_cents": 10000,
+      "spent_cents": 0,
+      "remaining_cents": 10000,
+      "percent_used": 0,
+      "status": "under"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id`, `category`, `limit_cents` | The budget, as in `GET /api/budgets`. |
+| `spent_cents` | The month's expenses in that category. `0` when there are none. |
+| `remaining_cents` | `limit_cents - spent_cents`. Negative when over the limit: `-2315` means $23.15 over. |
+| `percent_used` | `spent_cents * 100 / limit_cents`, rounded down to a whole number. Goes past 100 when over. |
+| `status` | `under` below 80% of the limit, `warning` from 80% up to and including 100%, `over` above the limit. One cent over is `over` even though `percent_used` is still `100`, so use `status`, not `percent_used`, to tell full from over. |
+
+Budget limits are not stored per month. Every month, past or future, is compared with the current limit: changing a limit changes the result for earlier months too, and a budget added in November is also shown against October's spending.
+
+Spending in a category without a budget isn't listed. A user with no budgets gets `{ "month": "2026-10", "budgets": [] }`.
+
+`400` for a missing or invalid `month`, with the same messages as `GET /api/summary`. `401` and `500` as for the other endpoints.
 
 ## Deployment
 The API runs on **Render** (free web service), set up by `render.yaml` in this repo. The front-end runs on Vercel; see the Deployment section in [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd#deployment). Secret values are only ever typed into the Render dashboard, never committed.
