@@ -5,6 +5,7 @@ import express from 'express';
 import { corsMiddleware, parseAllowedOrigins } from './cors.js';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
 import { budgetsRouter } from './routes/budgets.js';
+import { goalsRouter } from './routes/goals.js';
 import { healthRouter } from './routes/health.js';
 import { summaryRouter } from './routes/summary.js';
 import { transactionsRouter } from './routes/transactions.js';
@@ -25,6 +26,7 @@ export function createApp({ allowedOrigins = parseAllowedOrigins(process.env.CLI
   app.use('/api/transactions', transactionsRouter);
   app.use('/api/summary', summaryRouter);
   app.use('/api/budgets', budgetsRouter);
+  app.use('/api/goals', goalsRouter);
 
   app.use(notFound);
   app.use(errorHandler);
