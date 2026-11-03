@@ -43,8 +43,15 @@ export function validatePositiveCents(value, field = 'amount_cents') {
   return null;
 }
 
-// `field` names the value in the message: the body's `date`, or the list's `from` and `to`.
-function validateDate(value, field = 'date') {
+/**
+ * Checks a required YYYY-MM-DD date that is a real calendar day in MIN_YEAR or later:
+ * a transaction's date, the list's from and to, or a goal's target_date.
+ *
+ * @param {unknown} value
+ * @param {string} [field] Named in the message.
+ * @returns {string|null} An error message, or null if it's valid.
+ */
+export function validateDate(value, field = 'date') {
   if (isMissing(value)) return `${field} is required.`;
   const match = typeof value === 'string' ? DATE_PATTERN.exec(value) : null;
   if (!match) return `${field} must be a string in YYYY-MM-DD format.`;

@@ -32,7 +32,7 @@ Fill in `.env` (real values are in the team's credential document):
 | `CLIENT_ORIGIN` | No | `http://localhost:5173`. Sites allowed to call the API from a browser (see [CORS](#cors)). Not needed locally, because the Vite proxy makes requests same-origin. |
 | `NODE_ENV` | No | Leave unset locally. `production` on Render. |
 
-The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `005_create_budgets.sql`); it only applies files the shared database doesn't have yet.
+The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `006_create_goals.sql`); it only applies files the shared database doesn't have yet.
 
 Then start the server:
 
@@ -132,13 +132,14 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 - `test/setup.js` runs before every test file. It replaces `src/db.js` with an in-memory database (`test/support/fakeDatabase.js`) and Supabase token checks with fixed test users (`test/support/fakeAuth.js`), and resets both before each test.
 - `vitest.config.js` also blanks `DATABASE_URL` and the Supabase variables during tests, so anything that slipped past the fakes would fail instead of connecting.
 - HTTP tests use Supertest against `createApp()` from `src/app.js`, with `ALICE` and `BOB` as logged-in users: `request(app).get('/api/transactions').set('Authorization', bearer(ALICE))`.
-- The fake database runs the app's simple SQL on `transactions` and `budgets`: SELECT (with `COUNT(*)`, `SUM(...)` and GROUP BY), INSERT, UPDATE and DELETE, with `=`, `= ANY`, `>=`, `<=`, `<`, `>` and `ILIKE` conditions, plus ORDER BY, LIMIT and OFFSET. It applies exactly the conditions written, so ownership checks and filters are really tested, and it enforces unique constraints with the same `23505` error Postgres gives. Add rows with `addRows(...)` (transactions) or `addRowsTo('budgets', ...)`. A new table, statement or condition throws until it's supported in `fakeDatabase.js`: add a table to `TABLES`, a condition to `CONDITIONS`, or a select-list item to `SELECT_ITEMS`.
+- The fake database runs the app's simple SQL on `transactions`, `budgets` and `goals`: SELECT (with `COUNT(*)`, `SUM(...)` and GROUP BY), INSERT, UPDATE and DELETE, with `=`, `= ANY`, `>=`, `<=`, `<`, `>` and `ILIKE` conditions, plus ORDER BY, LIMIT and OFFSET. It applies exactly the conditions written, so ownership checks and filters are really tested, and it enforces unique constraints with the same `23505` error Postgres gives. Add rows with `addRows(...)` (transactions) or `addRowsTo('budgets', ...)` and `addRowsTo('goals', ...)`. A new table, statement or condition throws until it's supported in `fakeDatabase.js`: add a table to `TABLES`, a condition to `CONDITIONS`, or a select-list item to `SELECT_ITEMS`.
 
 | Folder | What it covers |
 | --- | --- |
 | `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures. `listQuery.test.js` covers paging, search, category and date filters together. |
 | `test/summary/` | Monthly totals against hand-worked examples (US-30), month validation, and `/api/summary`: month boundaries, December to January, owner scoping, 400, 401 |
 | `test/budgets/` | Budget validation; spent, remaining and percent used against hand-worked examples, including the 80% and 100% boundaries (US-35); and every `/api/budgets` endpoint, including `/status`: success, 400, 401, 404, 409, month boundaries, ownership and database failures |
+| `test/goals/` | Goal validation, BIGINT amounts read back as numbers, and every `/api/goals` endpoint: success, 400, 401, 404, ignored `user_id` and `saved_cents`, ownership and database failures |
 | `test/migrations.test.js` | That the constraint names the routes rely on are the ones the migrations create |
 | `test/support/fakeDatabase.test.js` | The fake database's GROUP BY, SUM, COUNT and unique constraints |
 | `test/auth/` | The real token check (not the fake) with malformed tokens: always `401`, never a network call |
@@ -628,11 +629,82 @@ Spending in a category without a budget isn't listed. A user with no budgets get
 
 `400` for a missing or invalid `month`, with the same messages as `GET /api/summary`. `401` and `500` as for the other endpoints.
 
+### `GET /api/goals`
+The logged-in user's savings goals (US-47), newest first. Needs migration `006_create_goals.sql`.
+
+`200 OK`:
+
+```json
+{
+  "goals": [
+    {
+      "id": "3",
+      "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "name": "Trip to Japan",
+      "target_cents": 350000,
+      "saved_cents": 0,
+      "target_date": "2027-04-01",
+      "created_at": "2026-11-02T14:00:00.000Z",
+      "updated_at": "2026-11-02T14:00:00.000Z"
+    }
+  ]
+}
+```
+
+A user with no goals gets `{ "goals": [] }`. `id` is a string because the column is a `BIGINT`. `target_cents` and `saved_cents` are `BIGINT` columns too, but they're always returned as numbers. `target_date` is `null` when the goal has none.
+
+### `POST /api/goals`
+Adds a goal.
+
+```json
+{ "name": "Trip to Japan", "target_cents": 350000, "target_date": "2027-04-01" }
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `name` | Yes | Text, 1 to 60 characters after trimming spaces at either end. Saved trimmed. |
+| `target_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647 (the same limit as a transaction). `350000` means $3,500.00. |
+| `target_date` | No | A real date as `YYYY-MM-DD`, in 1900 or later. Leave it out, or send `null` or `""`, for no date. |
+
+Any other fields, including `user_id` and `saved_cents`, are ignored. A new goal always starts with `saved_cents: 0`.
+
+`201 Created` with `{ "goal": { ... } }` in the same shape as above.
+
+`400 Bad Request`, listing every invalid field:
+
+```json
+{
+  "errors": {
+    "name": "name is required.",
+    "target_cents": "target_cents must be greater than zero.",
+    "target_date": "target_date must be a real calendar date."
+  }
+}
+```
+
+### `PUT /api/goals/:id`
+Replaces a goal's `name`, `target_cents` and `target_date`, with the same rules as `POST`. Every field is replaced, so leaving `target_date` out clears it. `saved_cents`, `user_id` and other fields are ignored.
+
+`200 OK` with `{ "goal": { ... } }`. `updated_at` is set to the time of the update.
+
+`400` for invalid fields or a bad `:id` (all listed at once). `404 Not Found` with `{ "error": "Goal not found." }` when no goal with that id exists or it belongs to another user; the response is the same in both cases.
+
+### `DELETE /api/goals/:id`
+Deletes a goal. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
+
+### For US-49: adding contributions
+`saved_cents` is only meant to change through contributions, which aren't built yet. The plan:
+
+- `POST /api/goals/:id/contributions` with `{ "amount_cents": 2500 }`. Check `:id` with `validateGoalId` and the amount with `validatePositiveCents(amount_cents, 'amount_cents')`, so zero, negative and non-whole amounts get a `400`.
+- One statement adds it, scoped to the owner: `UPDATE public.goals SET saved_cents = saved_cents + $3 WHERE id = $1 AND user_id = $2 RETURNING ...` (use `GOAL_COLUMNS` and `toGoal` from `src/goals/repository.js`). No row means `404 Goal not found.`; return `200 { "goal": { ... } }` otherwise.
+- The fake database only understands `column = $n` in `SET`, so `saved_cents = saved_cents + $3` needs adding to `update()` in `test/support/fakeDatabase.js` first.
+- Use `POST` or `PUT`, never `PATCH`: CORS (`src/cors.js`) only allows `GET`, `POST`, `PUT` and `DELETE`.
+
 ## Deployment
 The API runs on **Render** (free web service), set up by `render.yaml` in this repo. The front-end runs on Vercel; see the Deployment section in [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd#deployment). Secret values are only ever typed into the Render dashboard, never committed.
 
 ### 1. Order of operations
-1. Check the database (step 3 below): migrations 001 to 005 applied.
+1. Check the database (step 3 below): migrations 001 to 006 applied.
 2. Deploy the API on Render (step 2) and note its URL, for example `https://finora-api.onrender.com`.
 3. Deploy the front-end on Vercel with `VITE_API_URL` set to that URL, and note the front-end's URL, for example `https://finora.vercel.app`.
 4. Put the front-end's URL in the API's `CLIENT_ORIGIN` on Render.
@@ -667,7 +739,7 @@ The API runs on **Render** (free web service), set up by `render.yaml` in this r
 **Never run on Render:** migrations and the seed. The build and start commands don't run them, `test/deployment.test.js` fails if `render.yaml` ever does, and `npm run seed` refuses to run because `NODE_ENV` is `production`.
 
 ### 3. Supabase settings
-1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `005_create_budgets.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
+1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `006_create_goals.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
 2. **Auth URLs:** **Authentication**, then **URL Configuration**:
    - **Site URL:** the front-end's URL, for example `https://finora.vercel.app`.
    - **Redirect URLs:** add `https://finora.vercel.app/**`, and keep `http://localhost:5173/**` for local development.
