@@ -1,5 +1,6 @@
 // /api/budgets (US-31, US-33) through the real Express app, with the in-memory
-// database and token check from test/setup.js.
+// database and token check from test/setup.js. GET /api/budgets/status (US-35) is in
+// the 401 and database failure checks here; the rest of it is in statusRoutes.test.js.
 
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
@@ -28,6 +29,7 @@ function addBudgets(...rows) {
 function as(user) {
   return {
     list: () => request(app).get('/api/budgets').set('Authorization', bearer(user)),
+    status: (month) => request(app).get(`/api/budgets/status?month=${month}`).set('Authorization', bearer(user)),
     create: (body) => request(app).post('/api/budgets').set('Authorization', bearer(user)).send(body),
     update: (id, body) => request(app).put(`/api/budgets/${id}`).set('Authorization', bearer(user)).send(body),
     remove: (id) => request(app).delete(`/api/budgets/${id}`).set('Authorization', bearer(user)),
@@ -38,6 +40,7 @@ const pgError = (code, constraint) => Object.assign(new Error(`violates "${const
 
 const ENDPOINTS = [
   ['GET /api/budgets', () => request(app).get('/api/budgets')],
+  ['GET /api/budgets/status', () => request(app).get('/api/budgets/status?month=2026-10')],
   ['POST /api/budgets', () => request(app).post('/api/budgets').send(FOOD)],
   ['PUT /api/budgets/:id', () => request(app).put('/api/budgets/1').send({ limit_cents: 100 })],
   ['DELETE /api/budgets/:id', () => request(app).delete('/api/budgets/1')],
@@ -330,6 +333,7 @@ describe('ownership in every budget query', () => {
 describe('database failures', () => {
   it.each([
     ['GET', () => as(ALICE).list()],
+    ['GET status', () => as(ALICE).status('2026-10')],
     ['POST', () => as(ALICE).create(FOOD)],
     ['PUT', () => as(ALICE).update('1', { limit_cents: 100 })],
     ['DELETE', () => as(ALICE).remove('1')],
