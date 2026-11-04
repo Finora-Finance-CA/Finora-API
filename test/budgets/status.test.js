@@ -1,5 +1,5 @@
-// US-35: spending against each budget, checked against hand-worked examples. US-51
-// adds to these.
+// Spending against each budget, checked against hand-worked examples: US-35, and the
+// under, at and over budget cases for US-51 at the end of the file.
 
 import { describe, expect, it } from 'vitest';
 import { compareToLimit, summarizeBudgets, WARNING_PERCENT } from '../../src/budgets/status.js';
@@ -124,5 +124,83 @@ describe('summarizeBudgets', () => {
 
   it('refuses a total that a JavaScript number cannot hold exactly', () => {
     expect(() => summarizeBudgets([budget('1', 'Food', 1000)], [spent('Food', '9007199254740992')])).toThrow(RangeError);
+  });
+});
+
+// US-51: under, at and over budget, each worked out by hand from real-looking expenses,
+// through summarizeBudgets so the adding up is checked too.
+describe('budget comparison and remaining amount (US-51)', () => {
+  const budget = (category, limit_cents) => ({ id: '1', category, limit_cents });
+  const spent = (category, spent_cents) => ({ category, spent_cents });
+  const summarize = (limit, ...rows) => summarizeBudgets([budget(rows[0].category, limit)], rows)[0];
+
+  describe('under budget', () => {
+    it('two small expenses well under the limit', () => {
+      // Entertainment limit $100.00. Movie $14.99 + streaming $16.99 = $31.98.
+      // $31.98 / $100.00 = 31.98%, so 31. $100.00 - $31.98 = $68.02 left.
+      expect(summarize(10000, spent('Entertainment', 1499), spent('Entertainment', 1699))).toMatchObject({
+        spent_cents: 3198,
+        remaining_cents: 6802,
+        percent_used: 31,
+        status: 'under',
+      });
+    });
+
+    it('one cent short of the 80% warning', () => {
+      // Food limit $100.00. Groceries $50.00 + $29.99 = $79.99, 79.99%, so 79.
+      // Still under: the warning starts at exactly $80.00. $20.01 left.
+      expect(summarize(10000, spent('Food', 5000), spent('Food', 2999))).toMatchObject({
+        spent_cents: 7999,
+        remaining_cents: 2001,
+        percent_used: 79,
+        status: 'under',
+      });
+    });
+  });
+
+  describe('at budget', () => {
+    it('two expenses that add up to exactly the limit', () => {
+      // Transportation limit $150.00. Transit pass $75.25 + gas $74.75 = $150.00.
+      // Exactly 100%: a warning, not over. $0.00 left.
+      expect(summarize(15000, spent('Transportation', 7525), spent('Transportation', 7475))).toMatchObject({
+        spent_cents: 15000,
+        remaining_cents: 0,
+        percent_used: 100,
+        status: 'warning',
+      });
+    });
+
+    it('a tiny limit spent exactly', () => {
+      // Other limit $0.01, spent $0.01: 100%, a warning, nothing left.
+      expect(summarize(1, spent('Other', 1))).toMatchObject({
+        spent_cents: 1,
+        remaining_cents: 0,
+        percent_used: 100,
+        status: 'warning',
+      });
+    });
+  });
+
+  describe('over budget', () => {
+    it('two expenses that go past the limit', () => {
+      // Other limit $200.00. Phone $125.99 + gift $80.00 = $205.99.
+      // $205.99 / $200.00 = 102.995%, so 102. Over by $5.99, so -599 left.
+      expect(summarize(20000, spent('Other', 12599), spent('Other', 8000))).toMatchObject({
+        spent_cents: 20599,
+        remaining_cents: -599,
+        percent_used: 102,
+        status: 'over',
+      });
+    });
+
+    it('a tiny limit spent twice over', () => {
+      // Other limit $0.01, spent $0.02: 200%, over by $0.01.
+      expect(summarize(1, spent('Other', 2))).toMatchObject({
+        spent_cents: 2,
+        remaining_cents: -1,
+        percent_used: 200,
+        status: 'over',
+      });
+    });
   });
 });
