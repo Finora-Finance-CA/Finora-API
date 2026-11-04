@@ -561,6 +561,75 @@ Other `400` messages: `month is required, in YYYY-MM format, e.g. 2026-10.`, `mo
 
 `401` and `500` as for the other endpoints.
 
+### `GET /api/summary/categories`
+What the logged-in user spent in each expense category in one month (US-43). Expenses only; income is never counted.
+
+Every category is listed, in the usual order, with `0` where nothing was spent, so a missing category never has to be told apart from an empty one.
+
+Query parameters:
+
+| Parameter | Required | Rules |
+| --- | --- | --- |
+| `month` | Yes | As for `GET /api/summary`. |
+
+`200 OK`:
+
+```json
+{
+  "month": "2026-11",
+  "total_cents": 282000,
+  "categories": [
+    { "category": "Food", "spent_cents": 0 },
+    { "category": "Transportation", "spent_cents": 96000 },
+    { "category": "Housing", "spent_cents": 45000 },
+    { "category": "Entertainment", "spent_cents": 1000 },
+    { "category": "Other", "spent_cents": 140000 }
+  ]
+}
+```
+
+`400` for a missing or invalid `month`, with the same messages as `GET /api/summary`.
+`401` and `500` as for the other endpoints.
+
+### `GET /api/summary/trend`
+The logged-in user's total expenses for each of the `months` months ending at (and including) `month`, oldest first (US-44). `months` is optional: a whole number from 1 to 24, default 6. A month with no expenses is included with `0`, so a chart never skips a month.
+Query parameters:
+
+| Parameter | Required | Rules |
+| --- | --- | --- |
+| `month` | Yes | The last month shown. As for `GET /api/summary`. |
+| `months` | No | How many months to show, ending at `month`. A whole number from 1 to 24; default 6. Given once. |
+
+`200 OK` for `?month=2026-12`:
+
+```json
+{
+  "month": "2026-12",
+  "months": [
+    { "month": "2026-07", "expense_cents": 0 },
+    { "month": "2026-08", "expense_cents": 0 },
+    { "month": "2026-09", "expense_cents": 0 },
+    { "month": "2026-10", "expense_cents": 100000 },
+    { "month": "2026-11", "expense_cents": 282000 },
+    { "month": "2026-12", "expense_cents": 90000 }
+  ]
+}
+```
+
+`400` lists every invalid field at once:
+
+```json
+{
+  "errors": {
+    "month": "month must be a real month in YYYY-MM format, e.g. 2026-10.",
+    "months": "months must be a whole number from 1 to 24."
+  }
+}
+```
+
+The database adds up expenses per day across the whole range in one query; `src/summary/trend.js` rolls the days into months and fills in empty ones.
+`401` and `500` as for the other endpoints.
+
 ### `GET /api/budgets`
 The logged-in user's budgets: a monthly spending limit per category (US-31). In category order (`Food`, `Transportation`, `Housing`, `Entertainment`, `Other`).
 
