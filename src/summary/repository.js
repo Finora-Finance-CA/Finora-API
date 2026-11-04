@@ -24,3 +24,22 @@ export async function totalsByType(userId, { start, end }) {
   );
   return rows;
 }
+/**
+ * A user's expense total for each day in a date range that has expenses. A day with
+ * none has no row; trend.js fills in empty months. Grouped by day, not month, so the
+ * SQL stays plain enough for every database the tests use.
+ *
+ * @param {string} userId The owner's id, taken from the verified token.
+ * @param {{ start: string, end: string }} range YYYY-MM-DD; start inclusive, end exclusive.
+ * @returns {Promise<import('./trend.js').DayTotal[]>}
+ */
+export async function expenseTotalsByDay(userId, { start, end }) {
+  const { rows } = await query(
+    `SELECT date, SUM(amount_cents) AS spent_cents
+     FROM public.transactions
+     WHERE user_id = $1 AND type = $2 AND date >= $3 AND date < $4
+     GROUP BY date`,
+    [userId, 'expense', start, end]
+  );
+  return rows;
+}

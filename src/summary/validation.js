@@ -2,6 +2,7 @@
 // database dependencies.
 
 import { MIN_YEAR } from '../constants.js';
+import { trendRange } from './trend.js';
 
 const MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
 const MONTH_FORMAT = 'month must be a real month in YYYY-MM format, e.g. 2026-10.';
@@ -59,4 +60,40 @@ export function validateSummaryQuery(query = {}) {
   }
 
   return { errors: null, value: { month, ...monthRange(year, monthNumber) } };
+}
+
+export const DEFAULT_TREND_MONTHS = 6;
+export const MAX_TREND_MONTHS = 24;
+
+/**
+ * Validates the query string of GET /api/summary/trend: the same `month` as
+ * GET /api/summary (the last month shown), and an optional `months`, how many months
+ * to show, 1 to MAX_TREND_MONTHS (default 6). Every problem is reported at once.
+ *
+ * @param {Record<string, unknown>} [query] The parsed query string (req.query).
+ * @returns {{ errors: Record<string, string> } | { errors: null, value: { month: string, count: number, months: string[], start: string, end: string } }}
+ */
+export function validateTrendQuery(query = {}) {
+  const errors = {};
+
+  const monthResult = validateSummaryQuery(query);
+  if (monthResult.errors) Object.assign(errors, monthResult.errors);
+
+  let count = DEFAULT_TREND_MONTHS;
+  const { months } = query;
+  if (Array.isArray(months)) {
+    errors.months = 'months must be given only once.';
+  } else if (months !== undefined) {
+    const valid = typeof months === 'string' && /^\d{1,2}$/.test(months);
+    count = valid ? Number(months) : NaN;
+    if (!valid || count < 1 || count > MAX_TREND_MONTHS) {
+      errors.months = `months must be a whole number from 1 to ${MAX_TREND_MONTHS}.`;
+    }
+  }
+
+  if (Object.keys(errors).length > 0) return { errors };
+
+  const { month } = monthResult.value;
+  const [year, monthNumber] = month.split('-').map(Number);
+  return { errors: null, value: { month, count, ...trendRange(year, monthNumber, count) } };
 }
