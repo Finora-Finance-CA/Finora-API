@@ -32,7 +32,7 @@ Fill in `.env` (real values are in the team's credential document):
 | `CLIENT_ORIGIN` | No | `http://localhost:5173`. Sites allowed to call the API from a browser (see [CORS](#cors)). Not needed locally, because the Vite proxy makes requests same-origin. |
 | `NODE_ENV` | No | Leave unset locally. `production` on Render. |
 
-The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `005_create_budgets.sql`); it only applies files the shared database doesn't have yet.
+The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `006_create_goals.sql`); it only applies files the shared database doesn't have yet.
 
 Then start the server:
 
@@ -72,6 +72,34 @@ Authorization: Bearer <supabase access token>
 Missing, invalid, expired or malformed tokens (for example `Bearer abc.def.ghi`) get `401` with `{ "error": "..." }` and a `WWW-Authenticate: Bearer` header. If Supabase can't be reached, the request fails with `500`.
 
 `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` must be set, or the server will not start. Only the publishable key is used; the secret key must never be added here.
+
+## Data privacy
+Every user sees and changes only their own transactions, budgets and goals (US-45). Three things make sure of it:
+
+1. **A token on every `/api` request.** Each router starts with `router.use(requireAuth)`, so a request without a valid token gets `401` before any route runs. `GET /health` is the only public route.
+2. **The owner check in the SQL.** The user id comes only from the verified token (`req.user.id`), never from the body, the query string or the URL. Every repository function takes it first, and every statement on a user's table is limited to that user: `WHERE ... AND user_id = $n` on every SELECT, UPDATE and DELETE, and `user_id` set from the token on every INSERT. Another user's record therefore can't be found: `PUT` and `DELETE` return `404`, with exactly the same body as an id that doesn't exist, so nobody can tell which ids other users have.
+3. **Row level security on every table.** Supabase also exposes the database through its own REST API. Every table has RLS turned on with no policies, which blocks that API completely. The Finora API connects directly with `DATABASE_URL` and isn't affected.
+
+| Endpoint | Owner check |
+| --- | --- |
+| `GET /api/transactions` | `WHERE user_id = $1` on the count and the page |
+| `POST /api/transactions` | `user_id` from the token |
+| `PUT`, `DELETE /api/transactions/:id` | `WHERE id = $1 AND user_id = $2`; otherwise `404` |
+| `GET /api/summary` | `WHERE user_id = $1` |
+| `GET /api/budgets`, `GET /api/budgets/status` | `WHERE user_id = $1` on the budgets and on the spending |
+| `POST /api/budgets` | `user_id` from the token |
+| `PUT`, `DELETE /api/budgets/:id` | `WHERE id = $1 AND user_id = $2`; otherwise `404` |
+| `GET /api/goals` | `WHERE user_id = $1` |
+| `POST /api/goals` | `user_id` from the token |
+| `PUT`, `DELETE /api/goals/:id` | `WHERE id = $1 AND user_id = $2`; otherwise `404` |
+
+Rules for new code (tests fail if they're broken):
+
+- **A new router** starts with `router.use(requireAuth)`. `test/privacy/routeAuth.test.js` reads every route from the app and fails if one under `/api` answers without a token. Only `/health` is on its public list.
+- **A new table** that holds a user's data has a `user_id` column, and its migration ends with `ALTER TABLE public.<table> ENABLE ROW LEVEL SECURITY;`. The integration tests fail if any table in `public` has RLS off. Add the table to `USER_TABLES` in `test/support/ownership.js` too, so the owner check is enforced on its queries.
+- **Every query** on such a table has `user_id = $n` in its WHERE clause (or sets `user_id` on INSERT). `expectEveryStatementOwnedBy()` in `test/support/ownership.js` checks this for every statement a test sends; naming `user_id` only in the returned columns doesn't count.
+
+Known limit: a Supabase access token stays valid until it expires (about an hour), even after the user logs out, because the check reads the signed token rather than asking Supabase whether the session still exists. Logging out removes the token from the browser, so this only matters if a token was copied before logout.
 
 ## CORS
 `src/cors.js` uses the `cors` package so that only the sites in `CLIENT_ORIGIN` can call the API from a browser. `CLIENT_ORIGIN` is a comma-separated list of origins (scheme and host only, no path), for example:
@@ -132,15 +160,17 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 - `test/setup.js` runs before every test file. It replaces `src/db.js` with an in-memory database (`test/support/fakeDatabase.js`) and Supabase token checks with fixed test users (`test/support/fakeAuth.js`), and resets both before each test.
 - `vitest.config.js` also blanks `DATABASE_URL` and the Supabase variables during tests, so anything that slipped past the fakes would fail instead of connecting.
 - HTTP tests use Supertest against `createApp()` from `src/app.js`, with `ALICE` and `BOB` as logged-in users: `request(app).get('/api/transactions').set('Authorization', bearer(ALICE))`.
-- The fake database runs the app's simple SQL on `transactions` and `budgets`: SELECT (with `COUNT(*)`, `SUM(...)` and GROUP BY), INSERT, UPDATE and DELETE, with `=`, `= ANY`, `>=`, `<=`, `<`, `>` and `ILIKE` conditions, plus ORDER BY, LIMIT and OFFSET. It applies exactly the conditions written, so ownership checks and filters are really tested, and it enforces unique constraints with the same `23505` error Postgres gives. Add rows with `addRows(...)` (transactions) or `addRowsTo('budgets', ...)`. A new table, statement or condition throws until it's supported in `fakeDatabase.js`: add a table to `TABLES`, a condition to `CONDITIONS`, or a select-list item to `SELECT_ITEMS`.
+- The fake database runs the app's simple SQL on `transactions`, `budgets` and `goals`: SELECT (with `COUNT(*)`, `SUM(...)` and GROUP BY), INSERT, UPDATE and DELETE, with `=`, `= ANY`, `>=`, `<=`, `<`, `>` and `ILIKE` conditions, plus ORDER BY, LIMIT and OFFSET. It applies exactly the conditions written, so ownership checks and filters are really tested, and it enforces unique constraints with the same `23505` error Postgres gives. Add rows with `addRows(...)` (transactions) or `addRowsTo('budgets', ...)` and `addRowsTo('goals', ...)`. A new table, statement or condition throws until it's supported in `fakeDatabase.js`: add a table to `TABLES`, a condition to `CONDITIONS`, or a select-list item to `SELECT_ITEMS`.
 
 | Folder | What it covers |
 | --- | --- |
 | `test/transactions/` | Validation rules, and every `/api/transactions` endpoint: success, 400, 401, 404, ownership and database failures. `listQuery.test.js` covers paging, search, category and date filters together. |
 | `test/summary/` | Monthly totals against hand-worked examples (US-30), month validation, and `/api/summary`: month boundaries, December to January, owner scoping, 400, 401 |
-| `test/budgets/` | Budget validation, and every `/api/budgets` endpoint: success, 400, 401, 404, 409, ownership and database failures |
+| `test/budgets/` | Budget validation; spent, remaining and percent used against hand-worked examples, including the 80% and 100% boundaries (US-35); and every `/api/budgets` endpoint, including `/status`: success, 400, 401, 404, 409, month boundaries, ownership and database failures |
+| `test/privacy/` | US-45, US-46: as `BOB`, every endpoint on `ALICE`'s transaction, budget and goal (lists, summary, budget status, `PUT`, `DELETE`, `user_id` in the body) without seeing or changing them; every `/api` route read from the app returns `401` without a valid token; an undecodable `:id` like `%ZZ` returns `400` on every route |
+| `test/goals/` | Goal validation, BIGINT amounts read back as numbers, and every `/api/goals` endpoint: success, 400, 401, 404, ignored `user_id` and `saved_cents`, ownership and database failures |
 | `test/migrations.test.js` | That the constraint names the routes rely on are the ones the migrations create |
-| `test/support/fakeDatabase.test.js` | The fake database's GROUP BY, SUM, COUNT and unique constraints |
+| `test/support/` | The fake database's GROUP BY, SUM, COUNT and unique constraints; that the owner check (`ownership.js`) catches a statement without `user_id = $n`; and the integration tests' database guard |
 | `test/auth/` | The real token check (not the fake) with malformed tokens: always `401`, never a network call |
 | `test/constants.test.js` | That `CATEGORIES` matches the categories migration 004 seeds |
 | `test/seed/` | The seed script's data, settings, Supabase sign-in/sign-up handling, database writes and the full run |
@@ -149,8 +179,28 @@ Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never 
 | `test/deployment.test.js` | That `render.yaml` builds and starts the API as documented, uses `/health`, sets `NODE_ENV=production`, stores no secrets and never runs migrations or the seed, and that Node is 22 everywhere |
 | `test/setup.test.js` | That the fakes are really installed |
 
+### Integration tests
+The tests above run on an in-memory stand-in for Postgres. `npm run test:integration` runs the API on a real Postgres instead, to prove the SQL itself: the cross-user checks from `test/privacy/` (in `test/integration/crossUser.test.js`), budget status totals with month boundaries and totals larger than one `INTEGER`, goals with their `BIGINT` amounts and constraints, and RLS on every table (`test/integration/realSql.test.js`).
+
+They need a throwaway Postgres on this machine, because they **wipe the database they use** and rebuild it: they drop the `public` and `auth` schemas, add a minimal `auth.users` with the two test users, and apply every migration with `scripts/migrate.js`. `npm test` never runs them.
+
+```bash
+docker run -d --rm --name finora-integration-test -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=finora_test -p 127.0.0.1:5433:5432 postgres:16
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/finora_test npm run test:integration
+docker stop finora-integration-test
+```
+
+(In PowerShell, set the variable first: `$env:TEST_DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/finora_test"`.)
+
+`TEST_DATABASE_URL` is checked before anything else (`test/support/testDatabaseGuard.js`): the tests refuse to start unless its host is `localhost` or `127.0.0.1` and its database name contains `test`. It becomes `DATABASE_URL` for the tests, so `.env` (which points at the shared Supabase database) is never read for it. Never set `TEST_DATABASE_URL` to the Supabase connection string. The Supabase token check is still faked, as in the unit tests.
+
 ### CI
-`.github/workflows/test.yml` runs `npm ci` and `npm test` on Node 22 (from `.nvmrc`) for every push and every pull request. It needs no secrets. A pull request should only be merged when this check passes.
+`.github/workflows/test.yml` runs two jobs on Node 22 (from `.nvmrc`) for every push and every pull request, with no secrets:
+
+- `test`: `npm ci` and `npm test`.
+- `integration`: `npm ci` and `npm run test:integration`, with a `postgres:16` service container on `localhost`.
+
+A pull request should only be merged when both pass.
 
 ## Sample data
 
@@ -199,10 +249,10 @@ The categories are stored in the `public.categories` table (migration `004_creat
 
 All request and response bodies are JSON. Errors use one of two shapes:
 
-- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`.
+- `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`, including one that can't be decoded, like `%ZZ`.
 - `401`, `404`, `409`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
 
-Every `/api/...` endpoint needs `Authorization: Bearer <supabase access token>`, and only ever reads or changes the logged-in user's own data. Money is always integer cents.
+Every `/api/...` endpoint needs `Authorization: Bearer <supabase access token>`, and only ever reads or changes the logged-in user's own data (see [Data privacy](#data-privacy)). Money is always integer cents.
 
 `GET /health` is the one exception, and uses its own shape (below).
 
@@ -511,6 +561,75 @@ Other `400` messages: `month is required, in YYYY-MM format, e.g. 2026-10.`, `mo
 
 `401` and `500` as for the other endpoints.
 
+### `GET /api/summary/categories`
+What the logged-in user spent in each expense category in one month (US-43). Expenses only; income is never counted.
+
+Every category is listed, in the usual order, with `0` where nothing was spent, so a missing category never has to be told apart from an empty one.
+
+Query parameters:
+
+| Parameter | Required | Rules |
+| --- | --- | --- |
+| `month` | Yes | As for `GET /api/summary`. |
+
+`200 OK`:
+
+```json
+{
+  "month": "2026-11",
+  "total_cents": 282000,
+  "categories": [
+    { "category": "Food", "spent_cents": 0 },
+    { "category": "Transportation", "spent_cents": 96000 },
+    { "category": "Housing", "spent_cents": 45000 },
+    { "category": "Entertainment", "spent_cents": 1000 },
+    { "category": "Other", "spent_cents": 140000 }
+  ]
+}
+```
+
+`400` for a missing or invalid `month`, with the same messages as `GET /api/summary`.
+`401` and `500` as for the other endpoints.
+
+### `GET /api/summary/trend`
+The logged-in user's total expenses for each of the `months` months ending at (and including) `month`, oldest first (US-44). `months` is optional: a whole number from 1 to 24, default 6. A month with no expenses is included with `0`, so a chart never skips a month.
+Query parameters:
+
+| Parameter | Required | Rules |
+| --- | --- | --- |
+| `month` | Yes | The last month shown. As for `GET /api/summary`. |
+| `months` | No | How many months to show, ending at `month`. A whole number from 1 to 24; default 6. Given once. |
+
+`200 OK` for `?month=2026-12`:
+
+```json
+{
+  "month": "2026-12",
+  "months": [
+    { "month": "2026-07", "expense_cents": 0 },
+    { "month": "2026-08", "expense_cents": 0 },
+    { "month": "2026-09", "expense_cents": 0 },
+    { "month": "2026-10", "expense_cents": 100000 },
+    { "month": "2026-11", "expense_cents": 282000 },
+    { "month": "2026-12", "expense_cents": 90000 }
+  ]
+}
+```
+
+`400` lists every invalid field at once:
+
+```json
+{
+  "errors": {
+    "month": "month must be a real month in YYYY-MM format, e.g. 2026-10.",
+    "months": "months must be a whole number from 1 to 24."
+  }
+}
+```
+
+The database adds up expenses per day across the whole range in one query; `src/summary/trend.js` rolls the days into months and fills in empty ones.
+`401` and `500` as for the other endpoints.
+
 ### `GET /api/budgets`
 The logged-in user's budgets: a monthly spending limit per category (US-31). In category order (`Food`, `Transportation`, `Housing`, `Entertainment`, `Other`).
 
@@ -572,11 +691,138 @@ Changes a budget's limit. Only `limit_cents` can change (same rules as above); t
 ### `DELETE /api/budgets/:id`
 Deletes a budget. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
 
+### `GET /api/budgets/status`
+How much the logged-in user has spent against each of their budgets in one month (US-35). Only expenses count: an income is never counted, even if it has a category.
+
+Query parameters: `month`, required, with the same rules and the same month boundaries as [`GET /api/summary`](#get-apisummary).
+
+`200 OK`, with one entry per budget, in category order:
+
+```json
+{
+  "month": "2026-10",
+  "budgets": [
+    {
+      "id": "7",
+      "category": "Food",
+      "limit_cents": 50000,
+      "spent_cents": 40487,
+      "remaining_cents": 9513,
+      "percent_used": 80,
+      "status": "warning"
+    },
+    {
+      "id": "8",
+      "category": "Transportation",
+      "limit_cents": 15000,
+      "spent_cents": 17315,
+      "remaining_cents": -2315,
+      "percent_used": 115,
+      "status": "over"
+    },
+    {
+      "id": "9",
+      "category": "Entertainment",
+      "limit_cents": 10000,
+      "spent_cents": 0,
+      "remaining_cents": 10000,
+      "percent_used": 0,
+      "status": "under"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id`, `category`, `limit_cents` | The budget, as in `GET /api/budgets`. |
+| `spent_cents` | The month's expenses in that category. `0` when there are none. |
+| `remaining_cents` | `limit_cents - spent_cents`. Negative when over the limit: `-2315` means $23.15 over. |
+| `percent_used` | `spent_cents * 100 / limit_cents`, rounded down to a whole number. Goes past 100 when over. |
+| `status` | `under` below 80% of the limit, `warning` from 80% up to and including 100%, `over` above the limit. One cent over is `over` even though `percent_used` is still `100`, so use `status`, not `percent_used`, to tell full from over. |
+
+Budget limits are not stored per month. Every month, past or future, is compared with the current limit: changing a limit changes the result for earlier months too, and a budget added in November is also shown against October's spending.
+
+Spending in a category without a budget isn't listed. A user with no budgets gets `{ "month": "2026-10", "budgets": [] }`.
+
+`400` for a missing or invalid `month`, with the same messages as `GET /api/summary`. `401` and `500` as for the other endpoints.
+
+### `GET /api/goals`
+The logged-in user's savings goals (US-47), newest first. Needs migration `006_create_goals.sql`.
+
+`200 OK`:
+
+```json
+{
+  "goals": [
+    {
+      "id": "3",
+      "user_id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "name": "Trip to Japan",
+      "target_cents": 350000,
+      "saved_cents": 0,
+      "target_date": "2027-04-01",
+      "created_at": "2026-11-02T14:00:00.000Z",
+      "updated_at": "2026-11-02T14:00:00.000Z"
+    }
+  ]
+}
+```
+
+A user with no goals gets `{ "goals": [] }`. `id` is a string because the column is a `BIGINT`. `target_cents` and `saved_cents` are `BIGINT` columns too, but they're always returned as numbers. `target_date` is `null` when the goal has none.
+
+### `POST /api/goals`
+Adds a goal.
+
+```json
+{ "name": "Trip to Japan", "target_cents": 350000, "target_date": "2027-04-01" }
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `name` | Yes | Text, 1 to 60 characters after trimming spaces at either end. Saved trimmed. |
+| `target_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647 (the same limit as a transaction). `350000` means $3,500.00. |
+| `target_date` | No | A real date as `YYYY-MM-DD`, in 1900 or later. Leave it out, or send `null` or `""`, for no date. |
+
+Any other fields, including `user_id` and `saved_cents`, are ignored. A new goal always starts with `saved_cents: 0`.
+
+`201 Created` with `{ "goal": { ... } }` in the same shape as above.
+
+`400 Bad Request`, listing every invalid field:
+
+```json
+{
+  "errors": {
+    "name": "name is required.",
+    "target_cents": "target_cents must be greater than zero.",
+    "target_date": "target_date must be a real calendar date."
+  }
+}
+```
+
+### `PUT /api/goals/:id`
+Replaces a goal's `name`, `target_cents` and `target_date`, with the same rules as `POST`. Every field is replaced, so leaving `target_date` out clears it. `saved_cents`, `user_id` and other fields are ignored.
+
+`200 OK` with `{ "goal": { ... } }`. `updated_at` is set to the time of the update.
+
+`400` for invalid fields or a bad `:id` (all listed at once). `404 Not Found` with `{ "error": "Goal not found." }` when no goal with that id exists or it belongs to another user; the response is the same in both cases.
+
+### `DELETE /api/goals/:id`
+Deletes a goal. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
+
+### For US-49: adding contributions
+`saved_cents` is only meant to change through contributions, which aren't built yet. The plan:
+
+- `POST /api/goals/:id/contributions` with `{ "amount_cents": 2500 }`. Check `:id` with `validateGoalId` and the amount with `validatePositiveCents(amount_cents, 'amount_cents')`, so zero, negative and non-whole amounts get a `400`.
+- One statement adds it, scoped to the owner: `UPDATE public.goals SET saved_cents = saved_cents + $3 WHERE id = $1 AND user_id = $2 RETURNING ...` (use `GOAL_COLUMNS` and `toGoal` from `src/goals/repository.js`). No row means `404 Goal not found.`; return `200 { "goal": { ... } }` otherwise.
+- The fake database only understands `column = $n` in `SET`, so `saved_cents = saved_cents + $3` needs adding to `update()` in `test/support/fakeDatabase.js` first.
+- Use `POST` or `PUT`, never `PATCH`: CORS (`src/cors.js`) only allows `GET`, `POST`, `PUT` and `DELETE`.
+
 ## Deployment
 The API runs on **Render** (free web service), set up by `render.yaml` in this repo. The front-end runs on Vercel; see the Deployment section in [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd#deployment). Secret values are only ever typed into the Render dashboard, never committed.
 
 ### 1. Order of operations
-1. Check the database (step 3 below): migrations 001 to 005 applied.
+1. Check the database (step 3 below): migrations 001 to 006 applied.
 2. Deploy the API on Render (step 2) and note its URL, for example `https://finora-api.onrender.com`.
 3. Deploy the front-end on Vercel with `VITE_API_URL` set to that URL, and note the front-end's URL, for example `https://finora.vercel.app`.
 4. Put the front-end's URL in the API's `CLIENT_ORIGIN` on Render.
@@ -611,7 +857,7 @@ The API runs on **Render** (free web service), set up by `render.yaml` in this r
 **Never run on Render:** migrations and the seed. The build and start commands don't run them, `test/deployment.test.js` fails if `render.yaml` ever does, and `npm run seed` refuses to run because `NODE_ENV` is `production`.
 
 ### 3. Supabase settings
-1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `005_create_budgets.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
+1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `006_create_goals.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
 2. **Auth URLs:** **Authentication**, then **URL Configuration**:
    - **Site URL:** the front-end's URL, for example `https://finora.vercel.app`.
    - **Redirect URLs:** add `https://finora.vercel.app/**`, and keep `http://localhost:5173/**` for local development.

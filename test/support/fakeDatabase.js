@@ -35,6 +35,10 @@ const TABLES = {
     columns: { user_id: null, category: null, limit_cents: null },
     unique: [{ name: 'budgets_user_id_category_key', columns: ['user_id', 'category'] }],
   },
+  goals: {
+    columns: { user_id: null, name: null, target_cents: null, saved_cents: 0, target_date: null },
+    unique: [],
+  },
 };
 
 const state = {};

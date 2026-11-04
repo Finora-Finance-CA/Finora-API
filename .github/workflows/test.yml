@@ -24,3 +24,38 @@ jobs:
       # The tests use in-memory fakes for the database and Supabase, so no secrets
       # or environment variables are needed.
       - run: npm test
+
+  # The integration tests (npm run test:integration) on a throwaway Postgres 16. The
+  # steps run on the runner, not in a container, so the database is on localhost and
+  # src/db.js connects without SSL. Nothing here can reach the shared database: the
+  # tests refuse any TEST_DATABASE_URL that isn't a local test database.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: finora_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d finora_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finora_test
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run test:integration
