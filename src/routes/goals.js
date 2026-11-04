@@ -8,8 +8,9 @@
 import { Router } from 'express';
 import { HttpError, NotFoundError, UnauthorizedError } from '../errors.js';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { deleteGoal, insertGoal, listGoals, updateGoal } from '../goals/repository.js';
+import { deleteGoal, insertGoal, listGoals, updateGoal, addGoalContribution } from '../goals/repository.js';
 import { MAX_GOAL_NAME_LENGTH, validateGoalBody, validateGoalId } from '../goals/validation.js';
+import { validatePositiveCents } from '../transactions/validation.js';
 
 // Postgres error codes, and the constraint names from db/migrations/006_create_goals.sql.
 const FOREIGN_KEY_VIOLATION = '23503';
@@ -114,9 +115,52 @@ export async function handleDeleteGoal(req, res) {
   return res.status(204).end();
 }
 
+export async function handleAddContribution(req, res) {
+  const errors = {};
+  const idError = validateGoalId(req.params.id);
+
+  if (idError) errors.id = idError;
+
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    errors.body = 'Request body must be a JSON object.';
+  } else {
+    const amountError = validatePositiveCents(
+      body.amount_cents,
+      'amount_cents'
+    );
+    if (amountError) errors.amount_cents = amountError;
+  }
+
+  if (Object.keys(errors).length) {
+    return res.status(400).json({ errors });
+  }
+
+  const result = await addGoalContribution(
+    req.user.id,
+    req.params.id,
+    body.amount_cents
+  );
+
+  if (result.limitReached) {
+    return res.status(400).json({
+      errors: {
+        amount_cents: 'This contribution would exceed the maximum saved total.',
+      },
+    });
+  }
+
+  if (!result.goal) {
+    throw new NotFoundError(GOAL_NOT_FOUND);
+  }
+
+  return res.json({ goal: result.goal });
+}
+
 export const goalsRouter = Router();
 
 goalsRouter.use(requireAuth);
+goalsRouter.post('/:id/contributions', handleAddContribution);
 goalsRouter.get('/', handleListGoals);
 goalsRouter.post('/', handleCreateGoal);
 goalsRouter.put('/:id', handleUpdateGoal);

@@ -84,3 +84,31 @@ export async function deleteGoal(userId, goalId) {
   const { rowCount } = await query('DELETE FROM public.goals WHERE id = $1 AND user_id = $2', [goalId, userId]);
   return rowCount > 0;
 }
+
+/**
+ * checks if a goal exists and is owned by the user. Used to validate a goalId path
+ * parameter before calling addGoalContribution, which needs to know if the goal exists
+ * or if the user has already reached the target.
+ */
+
+export async function addGoalContribution(userId, goalId, amountCents) {
+  const { rows } = await query(
+    `UPDATE public.goals
+     SET saved_cents = saved_cents + $3::bigint
+     WHERE id = $1 AND user_id = $2
+       AND saved_cents <= $4::bigint - $3::bigint
+     RETURNING ${GOAL_COLUMNS}`,
+    [goalId, userId, amountCents, Number.MAX_SAFE_INTEGER]
+  );
+
+  if (rows[0]) return { goal: toGoal(rows[0]) };
+
+  const existing = await query(
+    'SELECT id FROM public.goals WHERE id = $1 AND user_id = $2',
+    [goalId, userId]
+  );
+
+  return existing.rows.length
+    ? { limitReached: true }
+    : { goal: null };
+}
