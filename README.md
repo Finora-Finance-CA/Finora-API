@@ -152,8 +152,11 @@ To add a migration:
 ## Tests
 
 ```bash
+npm run lint
 npm test
 ```
+
+`npm run lint` checks every file with ESLint (`eslint.config.js`): the recommended rules, as in the front-end, with Node's globals and, in `test/`, Vitest's. It looks for real mistakes such as undefined names, unused variables and unreachable code, not formatting.
 
 Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never touch the shared database or Supabase, so they need no `.env` and are safe to run any time:
 
@@ -197,7 +200,7 @@ docker stop finora-integration-test
 ### CI
 `.github/workflows/test.yml` runs two jobs on Node 22 (from `.nvmrc`) for every push and every pull request, with no secrets:
 
-- `test`: `npm ci` and `npm test`.
+- `test`: `npm ci`, `npm run lint` and `npm test`.
 - `integration`: `npm ci` and `npm run test:integration`, with a `postgres:16` service container on `localhost`.
 
 A pull request should only be merged when both pass.

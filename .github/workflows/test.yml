@@ -21,6 +21,8 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run lint
+
       # The tests use in-memory fakes for the database and Supabase, so no secrets
       # or environment variables are needed.
       - run: npm test
