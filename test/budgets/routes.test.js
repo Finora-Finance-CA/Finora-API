@@ -14,7 +14,7 @@ const app = createApp();
 
 const NOT_FOUND = { error: 'Budget not found.' };
 const SERVER_ERROR = { error: 'Something went wrong. Please try again later.' };
-const CATEGORY_ERROR = 'category must be one of: Food, Transportation, Housing, Entertainment, Other.';
+const CATEGORY_ERROR = 'Category must be one of Food, Transportation, Housing, Entertainment or Other.';
 const FOOD = { category: 'Food', limit_cents: 50000 };
 
 const stored = () => storedRowsIn('budgets');
@@ -137,12 +137,12 @@ describe('POST /api/budgets', () => {
   });
 
   it.each([
-    ['zero', 0, 'limit_cents must be greater than zero.'],
-    ['negative', -100, 'limit_cents must be greater than zero.'],
-    ['not whole', 99.5, 'limit_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-    ['a string', '50000', 'limit_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-    ['too large', MAX_AMOUNT_CENTS + 1, `limit_cents must be at most ${MAX_AMOUNT_CENTS}.`],
-    ['missing', undefined, 'limit_cents is required.'],
+    ['zero', 0, 'Limit must be greater than 0.'],
+    ['negative', -100, 'Limit must be greater than 0.'],
+    ['not whole', 99.5, 'Limit must be a whole number of cents, for example 1250 for $12.50.'],
+    ['a string', '50000', 'Limit must be a whole number of cents, for example 1250 for $12.50.'],
+    ['too large', MAX_AMOUNT_CENTS + 1, 'Limit must be $21,474,836.47 or less.'],
+    ['missing', undefined, 'Limit is required.'],
   ])('returns 400 for a limit that is %s, and saves nothing', async (_, limit_cents, message) => {
     const response = await as(ALICE).create({ category: 'Food', limit_cents });
 
@@ -154,7 +154,7 @@ describe('POST /api/budgets', () => {
   it.each([
     ['unknown', 'Groceries', CATEGORY_ERROR],
     ['in the wrong case', 'food', CATEGORY_ERROR],
-    ['missing', undefined, 'category is required.'],
+    ['missing', undefined, 'Category is required.'],
   ])('returns 400 for a category that is %s', async (_, category, message) => {
     const response = await as(ALICE).create({ category, limit_cents: 100 });
 
@@ -167,7 +167,7 @@ describe('POST /api/budgets', () => {
     const response = await as(ALICE).create({ category: 'Nope', limit_cents: 0 });
 
     expect(response.body).toEqual({
-      errors: { category: CATEGORY_ERROR, limit_cents: 'limit_cents must be greater than zero.' },
+      errors: { category: CATEGORY_ERROR, limit_cents: 'Limit must be greater than 0.' },
     });
   });
 
@@ -184,7 +184,7 @@ describe('POST /api/budgets', () => {
 
   it.each([
     ['the categories table rejects the category', pgError('23503', 'budgets_category_fkey'), 400, { errors: { category: CATEGORY_ERROR } }],
-    ['the limit CHECK fails', pgError('23514', 'budgets_limit_cents_positive'), 400, { errors: { limit_cents: 'limit_cents must be greater than zero.' } }],
+    ['the limit CHECK fails', pgError('23514', 'budgets_limit_cents_positive'), 400, { errors: { limit_cents: 'Limit must be greater than 0.' } }],
     ['the user no longer exists', pgError('23503', 'budgets_user_id_fkey'), 401, { error: 'User account no longer exists. Log in again.' }],
   ])('returns %i-style errors, not 500, when %s', async (_, error, status, body) => {
     failNextQuery(error);
@@ -233,11 +233,11 @@ describe('PUT /api/budgets/:id', () => {
   });
 
   it.each([
-    [0, 'limit_cents must be greater than zero.'],
-    [-5, 'limit_cents must be greater than zero.'],
-    [1.25, 'limit_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-    [MAX_AMOUNT_CENTS + 1, `limit_cents must be at most ${MAX_AMOUNT_CENTS}.`],
-    [undefined, 'limit_cents is required.'],
+    [0, 'Limit must be greater than 0.'],
+    [-5, 'Limit must be greater than 0.'],
+    [1.25, 'Limit must be a whole number of cents, for example 1250 for $12.50.'],
+    [MAX_AMOUNT_CENTS + 1, 'Limit must be $21,474,836.47 or less.'],
+    [undefined, 'Limit is required.'],
   ])('returns 400 for the limit %j, and changes nothing', async (limit_cents, message) => {
     const [budget] = addBudgets(budgetFor(ALICE));
 
@@ -253,7 +253,7 @@ describe('PUT /api/budgets/:id', () => {
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
-      errors: { id: 'id must be a positive whole number.', limit_cents: 'limit_cents must be greater than zero.' },
+      errors: { id: 'ID must be a positive whole number.', limit_cents: 'Limit must be greater than 0.' },
     });
   });
 
@@ -261,7 +261,7 @@ describe('PUT /api/budgets/:id', () => {
     const response = await as(ALICE).update(id, { limit_cents: 100 });
 
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({ errors: { id: 'id must be a positive whole number.' } });
+    expect(response.body).toEqual({ errors: { id: 'ID must be a positive whole number.' } });
     expect(recordedQueries()).toEqual([]);
   });
 });
@@ -307,7 +307,7 @@ describe('DELETE /api/budgets/:id', () => {
     const response = await as(ALICE).remove(id);
 
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({ errors: { id: 'id must be a positive whole number.' } });
+    expect(response.body).toEqual({ errors: { id: 'ID must be a positive whole number.' } });
     expect(recordedQueries()).toEqual([]);
   });
 });

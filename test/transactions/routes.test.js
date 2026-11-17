@@ -13,7 +13,7 @@ const app = createApp();
 const EXPENSE = { amount_cents: 1250, date: '2026-10-05', type: 'expense', category: 'Food', description: 'Lunch' };
 const NOT_FOUND = { error: 'Transaction not found.' };
 const SERVER_ERROR = { error: 'Something went wrong. Please try again later.' };
-const CATEGORY_ERROR = 'category must be one of: Food, Transportation, Housing, Entertainment, Other.';
+const CATEGORY_ERROR = 'Category must be one of Food, Transportation, Housing, Entertainment or Other.';
 // What pg raises when transactions_category_fkey (migration 004) rejects a row.
 const CATEGORY_FK_ERROR = Object.assign(new Error('violates foreign key constraint "transactions_category_fkey"'), {
   code: '23503',
@@ -167,9 +167,9 @@ describe('POST /api/transactions', () => {
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
       errors: {
-        amount_cents: 'amount_cents must be greater than zero.',
-        date: 'date must be a real calendar date.',
-        category: 'category is required for an expense.',
+        amount_cents: 'Amount must be greater than 0.',
+        date: 'Date must be a real calendar date.',
+        category: 'Category is required for an expense.',
       },
     });
     expect(storedRows()).toEqual([]);
@@ -279,9 +279,9 @@ describe('PUT /api/transactions/:id', () => {
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
       errors: {
-        amount_cents: 'amount_cents must be greater than zero.',
-        date: 'date must be a string in YYYY-MM-DD format.',
-        type: 'type must be one of: income, expense.',
+        amount_cents: 'Amount must be greater than 0.',
+        date: 'Date must be in YYYY-MM-DD format, for example 2026-10-05.',
+        type: 'Type must be income or expense.',
       },
     });
     expect(storedRows()).toEqual([row]);
@@ -304,8 +304,8 @@ describe('PUT /api/transactions/:id', () => {
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
       errors: {
-        id: 'id must be a positive whole number.',
-        amount_cents: 'amount_cents must be a whole number of cents, e.g. 1250 for $12.50.',
+        id: 'ID must be a positive whole number.',
+        amount_cents: 'Amount must be a whole number of cents, for example 1250 for $12.50.',
       },
     });
   });
@@ -314,7 +314,7 @@ describe('PUT /api/transactions/:id', () => {
     const response = await as(ALICE).update(id, CHANGES);
 
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({ errors: { id: 'id must be a positive whole number.' } });
+    expect(response.body).toEqual({ errors: { id: 'ID must be a positive whole number.' } });
     expect(recordedQueries()).toEqual([]);
   });
 });
@@ -360,7 +360,7 @@ describe('DELETE /api/transactions/:id', () => {
     const response = await as(ALICE).remove(id);
 
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({ errors: { id: 'id must be a positive whole number.' } });
+    expect(response.body).toEqual({ errors: { id: 'ID must be a positive whole number.' } });
     expect(recordedQueries()).toEqual([]);
   });
 });

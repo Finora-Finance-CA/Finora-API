@@ -100,7 +100,7 @@ describe('replaceSampleTransactions', () => {
     const error = await replaceSampleTransactions(pool, input).catch((err) => err);
 
     expect(error).toBeInstanceOf(SeedError);
-    expect(error.message).toMatch(/amount_cents must be greater than zero/);
+    expect(error.message).toMatch(/Amount must be greater than 0/);
     expect(recordedQueries()).toEqual([]);
     expect(openClientCount()).toBe(0);
   });

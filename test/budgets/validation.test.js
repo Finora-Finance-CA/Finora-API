@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MAX_AMOUNT_CENTS } from '../../src/constants.js';
 import { validateBudgetId, validateBudgetUpdate, validateNewBudget } from '../../src/budgets/validation.js';
 
-const CATEGORY_ERROR = 'category must be one of: Food, Transportation, Housing, Entertainment, Other.';
+const CATEGORY_ERROR = 'Category must be one of Food, Transportation, Housing, Entertainment or Other.';
 
 describe('validateNewBudget', () => {
   it('accepts a category and a limit, ignoring other fields', () => {
@@ -18,8 +18,8 @@ describe('validateNewBudget', () => {
 
   it('reports every missing field at once', () => {
     expect(validateNewBudget({}).errors).toEqual({
-      category: 'category is required.',
-      limit_cents: 'limit_cents is required.',
+      category: 'Category is required.',
+      limit_cents: 'Limit is required.',
     });
   });
 
@@ -28,13 +28,13 @@ describe('validateNewBudget', () => {
   });
 
   it.each([
-    ['zero', 0, 'limit_cents must be greater than zero.'],
-    ['negative', -500, 'limit_cents must be greater than zero.'],
-    ['a decimal', 12.5, 'limit_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-    ['a numeric string', '500', 'limit_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-    ['a boolean', true, 'limit_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-    ['too large', MAX_AMOUNT_CENTS + 1, `limit_cents must be at most ${MAX_AMOUNT_CENTS}.`],
-    ['null', null, 'limit_cents is required.'],
+    ['zero', 0, 'Limit must be greater than 0.'],
+    ['negative', -500, 'Limit must be greater than 0.'],
+    ['a decimal', 12.5, 'Limit must be a whole number of cents, for example 1250 for $12.50.'],
+    ['a numeric string', '500', 'Limit must be a whole number of cents, for example 1250 for $12.50.'],
+    ['a boolean', true, 'Limit must be a whole number of cents, for example 1250 for $12.50.'],
+    ['too large', MAX_AMOUNT_CENTS + 1, 'Limit must be $21,474,836.47 or less.'],
+    ['null', null, 'Limit is required.'],
   ])('rejects a limit that is %s', (_, limit_cents, message) => {
     expect(validateNewBudget({ category: 'Food', limit_cents }).errors).toEqual({ limit_cents: message });
   });
@@ -45,7 +45,7 @@ describe('validateNewBudget', () => {
 
   it.each([null, [], 'Food', undefined])('rejects the body %j', (body) => {
     expect(validateNewBudget(body).errors).toEqual({
-      body: 'Request body must be a JSON object. Set Content-Type: application/json.',
+      body: 'Request body must be a JSON object.',
     });
   });
 });
@@ -59,9 +59,9 @@ describe('validateBudgetUpdate', () => {
   });
 
   it.each([
-    [0, 'limit_cents must be greater than zero.'],
-    [-1, 'limit_cents must be greater than zero.'],
-    [undefined, 'limit_cents is required.'],
+    [0, 'Limit must be greater than 0.'],
+    [-1, 'Limit must be greater than 0.'],
+    [undefined, 'Limit is required.'],
   ])('rejects the limit %j', (limit_cents, message) => {
     expect(validateBudgetUpdate({ limit_cents }).errors).toEqual({ limit_cents: message });
   });
@@ -73,6 +73,6 @@ describe('validateBudgetId', () => {
   });
 
   it.each(['0', '-1', '1.5', 'abc', '01', '9223372036854775808'])('rejects %s', (id) => {
-    expect(validateBudgetId(id)).toBe('id must be a positive whole number.');
+    expect(validateBudgetId(id)).toBe('ID must be a positive whole number.');
   });
 });

@@ -15,8 +15,10 @@ export const BUDGET_CATEGORIES = CATEGORIES;
 // Largest value a Postgres INTEGER column (amount_cents, limit_cents) can hold.
 export const MAX_AMOUNT_CENTS = 2_147_483_647;
 
-// Earliest year a date (or a summary month) may be in.
+// Earliest and latest year a date (or a summary month) may be in, inclusive: every date
+// is from 1900-01-01 to 2100-12-31. The front-end's date inputs use the same range.
 export const MIN_YEAR = 1900;
+export const MAX_YEAR = 2100;
 
 // How many transactions GET /api/transactions returns per page.
 export const TRANSACTION_PAGE_SIZE = 20;

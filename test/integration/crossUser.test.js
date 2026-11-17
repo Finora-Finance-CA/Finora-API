@@ -96,6 +96,19 @@ describe.each(RESOURCES)('another user’s $name', (resource) => {
   });
 });
 
+describe('another user’s goal contributions (US-49)', () => {
+  it('cannot be added by BOB: 404, and ALICE’s saved total is unchanged', async () => {
+    const goal = RESOURCES.find(({ name }) => name === 'goal');
+    const before = await storedRow(goal);
+
+    const response = await call(BOB, 'post', `/api/goals/${alices.goal.id}/contributions`, { amount_cents: 2500, user_id: ALICE.id });
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: 'Goal not found.' });
+    expect(await storedRow(goal)).toEqual(before);
+  });
+});
+
 describe('another user’s spending', () => {
   it('is left out of BOB’s summary and budget status for the same month and category', async () => {
     await call(BOB, 'post', '/api/budgets', { category: 'Food', limit_cents: 10000 });

@@ -26,28 +26,28 @@ describe('validateSummaryQuery', () => {
     ['missing', {}],
     ['empty', { month: '' }],
   ])('requires the month when it is %s', (_, query) => {
-    expect(validateSummaryQuery(query).errors).toEqual({ month: 'month is required, in YYYY-MM format, e.g. 2026-10.' });
+    expect(validateSummaryQuery(query).errors).toEqual({ month: 'Month is required, in YYYY-MM format, for example 2026-10.' });
   });
 
   it.each(['2026-13', '2026-00', '2026-1', '2026/10', '26-10', '2026-10-01', 'October', ' 2026-10'])(
     'rejects %j',
     (month) => {
       expect(validateSummaryQuery({ month }).errors).toEqual({
-        month: 'month must be a real month in YYYY-MM format, e.g. 2026-10.',
+        month: 'Month must be a real month in YYYY-MM format, for example 2026-10.',
       });
     }
   );
 
   it('rejects a month before 1900', () => {
-    expect(validateSummaryQuery({ month: '1899-12' }).errors).toEqual({ month: 'month must be in 1900 or later.' });
+    expect(validateSummaryQuery({ month: '1899-12' }).errors).toEqual({ month: 'Month must be between 1900-01 and 2100-12.' });
   });
 
   it('rejects a month given twice, or as an object', () => {
     expect(validateSummaryQuery({ month: ['2026-10', '2026-11'] }).errors).toEqual({
-      month: 'month must be given only once.',
+      month: 'Month must be given only once.',
     });
     expect(validateSummaryQuery({ month: { a: 'b' } }).errors).toEqual({
-      month: 'month must be a real month in YYYY-MM format, e.g. 2026-10.',
+      month: 'Month must be a real month in YYYY-MM format, for example 2026-10.',
     });
   });
 
