@@ -252,6 +252,16 @@ All request and response bodies are JSON. Errors use one of two shapes:
 - `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`, including one that can't be decoded, like `%ZZ`.
 - `401`, `404`, `409`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
 
+### Validation rules
+Every check and message is in `src/validation/rules.js`. Messages name fields the way a person would ("Amount", "Target", "From date"), never by their JSON key, so the front-end can show them as they are.
+
+- **Money** (`amount_cents`, `limit_cents`, `target_cents`, a contribution's `amount_cents`): a JSON number, a whole number of cents, greater than 0 and at most 2147483647 ($21,474,836.47). Strings are always rejected, including `"1250"`, `"12abc"`, `"1e3"` and `"Infinity"`.
+- **Dates**: exactly `YYYY-MM-DD`, a real calendar day (no Feb 30, or Feb 29 outside a leap year), from 1900-01-01 to 2100-12-31. **Months**: `YYYY-MM` from 1900-01 to 2100-12.
+- **Text** is trimmed before it's checked and saved, and counted in characters as Postgres counts them (an emoji is one).
+- **Ids** in the URL: a positive whole number with no leading zero, up to the BIGINT maximum.
+- A body that isn't valid JSON gets `{ "errors": { "body": "Request body must be valid JSON." } }`; one that isn't a JSON object gets `"Request body must be a JSON object."`. Neither is ever a `500`.
+- Invalid input never reaches the database. `test/validation/invalidInput.test.js` checks every endpoint with each kind of bad value.
+
 Every `/api/...` endpoint needs `Authorization: Bearer <supabase access token>`, and only ever reads or changes the logged-in user's own data (see [Data privacy](#data-privacy)). Money is always integer cents.
 
 `GET /health` is the one exception, and uses its own shape (below).
@@ -322,9 +332,9 @@ All the filters work together. Example: `GET /api/transactions?q=lunch&category=
 ```json
 {
   "errors": {
-    "page": "page must be a whole number from 1 to 100000.",
-    "category": "category must be one of: Food, Transportation, Housing, Entertainment, Other.",
-    "to": "to must be on or after from."
+    "page": "Page must be a whole number from 1 to 100,000.",
+    "category": "Category must be one of Food, Transportation, Housing, Entertainment or Other.",
+    "to": "To date must be on or after the From date."
   }
 }
 ```
@@ -358,7 +368,7 @@ Body:
 | Field | Required | Rules |
 | --- | --- | --- |
 | `amount_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647. `1250` means $12.50. Decimals and strings are rejected. |
-| `date` | Yes | Real calendar date as `YYYY-MM-DD`, year 1900 or later. |
+| `date` | Yes | Real calendar date as `YYYY-MM-DD`, from 1900-01-01 to 2100-12-31. |
 | `type` | Yes | `income` or `expense`. |
 | `category` | For `expense` | One of the [categories](#categories) (case-sensitive). Optional for `income`. |
 | `description` | No | String, trimmed, at most 255 characters. Empty becomes `null`. |
@@ -402,8 +412,8 @@ Example request:
 ```json
 {
   "errors": {
-    "amount_cents": "amount_cents must be greater than zero.",
-    "category": "category is required for an expense."
+    "amount_cents": "Amount must be greater than 0.",
+    "category": "Category is required for an expense."
   }
 }
 ```
@@ -467,8 +477,8 @@ Example request to `PUT /api/transactions/42`:
 ```json
 {
   "errors": {
-    "id": "id must be a positive whole number.",
-    "amount_cents": "amount_cents must be greater than zero."
+    "id": "ID must be a positive whole number.",
+    "amount_cents": "Amount must be greater than 0."
   }
 }
 ```
@@ -505,7 +515,7 @@ Authorization: Bearer <supabase access token>
 `400 Bad Request`, when `:id` is not a positive whole number:
 
 ```json
-{ "errors": { "id": "id must be a positive whole number." } }
+{ "errors": { "id": "ID must be a positive whole number." } }
 ```
 
 `401 Unauthorized`, when the token is missing, invalid or expired:
@@ -533,7 +543,7 @@ Query parameters:
 
 | Parameter | Required | Rules |
 | --- | --- | --- |
-| `month` | Yes | `YYYY-MM`, for example `2026-10`. Year 1900 or later. Given once. |
+| `month` | Yes | `YYYY-MM`, for example `2026-10`, from 1900-01 to 2100-12. Given once. |
 
 The month runs from its first day up to, but not including, the first day of the next month (`date >= '2026-10-01' AND date < '2026-11-01'`). The boundaries come from the text, so time zones can't move them. The API doesn't guess "this month", because it can't know the user's time zone; the front-end sends it.
 
@@ -554,10 +564,10 @@ The month runs from its first day up to, but not including, the first day of the
 `400 Bad Request`:
 
 ```json
-{ "errors": { "month": "month must be a real month in YYYY-MM format, e.g. 2026-10." } }
+{ "errors": { "month": "Month must be a real month in YYYY-MM format, for example 2026-10." } }
 ```
 
-Other `400` messages: `month is required, in YYYY-MM format, e.g. 2026-10.`, `month must be in 1900 or later.` and `month must be given only once.`
+Other `400` messages: `Month is required, in YYYY-MM format, for example 2026-10.`, `Month must be between 1900-01 and 2100-12.` and `Month must be given only once.`
 
 `401` and `500` as for the other endpoints.
 
@@ -621,8 +631,8 @@ Query parameters:
 ```json
 {
   "errors": {
-    "month": "month must be a real month in YYYY-MM format, e.g. 2026-10.",
-    "months": "months must be a whole number from 1 to 24."
+    "month": "Month must be a real month in YYYY-MM format, for example 2026-10.",
+    "months": "Months must be a whole number from 1 to 24."
   }
 }
 ```
@@ -669,8 +679,8 @@ Any other fields, including `user_id`, are ignored.
 ```json
 {
   "errors": {
-    "category": "category must be one of: Food, Transportation, Housing, Entertainment, Other.",
-    "limit_cents": "limit_cents must be greater than zero."
+    "category": "Category must be one of Food, Transportation, Housing, Entertainment or Other.",
+    "limit_cents": "Limit must be greater than 0."
   }
 }
 ```
@@ -782,7 +792,7 @@ Adds a goal.
 | --- | --- | --- |
 | `name` | Yes | Text, 1 to 60 characters after trimming spaces at either end. Saved trimmed. |
 | `target_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647 (the same limit as a transaction). `350000` means $3,500.00. |
-| `target_date` | No | A real date as `YYYY-MM-DD`, in 1900 or later. Leave it out, or send `null` or `""`, for no date. |
+| `target_date` | No | A real date as `YYYY-MM-DD`, from 1900-01-01 to 2100-12-31. Leave it out, or send `null` or `""`, for no date. |
 
 Any other fields, including `user_id` and `saved_cents`, are ignored. A new goal always starts with `saved_cents: 0`.
 
@@ -793,9 +803,9 @@ Any other fields, including `user_id` and `saved_cents`, are ignored. A new goal
 ```json
 {
   "errors": {
-    "name": "name is required.",
-    "target_cents": "target_cents must be greater than zero.",
-    "target_date": "target_date must be a real calendar date."
+    "name": "Name is required.",
+    "target_cents": "Target must be greater than 0.",
+    "target_date": "Target date must be a real calendar date."
   }
 }
 ```
@@ -810,13 +820,22 @@ Replaces a goal's `name`, `target_cents` and `target_date`, with the same rules 
 ### `DELETE /api/goals/:id`
 Deletes a goal. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
 
-### For US-49: adding contributions
-`saved_cents` is only meant to change through contributions, which aren't built yet. The plan:
+### `POST /api/goals/:id/contributions`
+Adds money to a goal's saved total (US-49). `saved_cents` changes only through this endpoint.
 
-- `POST /api/goals/:id/contributions` with `{ "amount_cents": 2500 }`. Check `:id` with `validateGoalId` and the amount with `validatePositiveCents(amount_cents, 'amount_cents')`, so zero, negative and non-whole amounts get a `400`.
-- One statement adds it, scoped to the owner: `UPDATE public.goals SET saved_cents = saved_cents + $3 WHERE id = $1 AND user_id = $2 RETURNING ...` (use `GOAL_COLUMNS` and `toGoal` from `src/goals/repository.js`). No row means `404 Goal not found.`; return `200 { "goal": { ... } }` otherwise.
-- The fake database only understands `column = $n` in `SET`, so `saved_cents = saved_cents + $3` needs adding to `update()` in `test/support/fakeDatabase.js` first.
-- Use `POST` or `PUT`, never `PATCH`: CORS (`src/cors.js`) only allows `GET`, `POST`, `PUT` and `DELETE`.
+```json
+{ "amount_cents": 2500 }
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `amount_cents` | Yes | The same rules as any money amount: a whole number of cents, greater than 0, at most 2147483647. |
+
+Any other fields are ignored. The amount is added in one statement scoped to the owner, so contributions sent at the same time all count. The total may go past `target_cents`. Contributions aren't stored one by one, so they can't be listed or undone.
+
+`200 OK` with `{ "goal": { ... } }`, the goal with its new `saved_cents`.
+
+`400` for a bad `:id` or amount (all listed at once), for example `{ "errors": { "amount_cents": "Amount must be greater than 0." } }`, or `{ "errors": { "amount_cents": "This contribution would exceed the maximum saved total." } }` if the total would pass 9007199254740991 cents. `404 Not Found` with `{ "error": "Goal not found." }` when no goal with that id exists or it belongs to another user; the response is the same in both cases.
 
 ## Deployment
 The API runs on **Render** (free web service), set up by `render.yaml` in this repo. The front-end runs on Vercel; see the Deployment section in [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd#deployment). Secret values are only ever typed into the Render dashboard, never committed.

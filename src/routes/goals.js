@@ -1,5 +1,5 @@
-// /api/goals routes (US-47). Every route requires a logged-in user, and only ever reads
-// or changes that user's own savings goals.
+// /api/goals routes (US-47, US-49). Every route requires a logged-in user, and only ever
+// reads or changes that user's own savings goals.
 //
 // Handlers stay thin: check the request (../goals/validation.js), make one repository
 // call (../goals/repository.js), send the response. Database errors that the client
@@ -9,8 +9,14 @@ import { Router } from 'express';
 import { HttpError, NotFoundError, UnauthorizedError } from '../errors.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { deleteGoal, insertGoal, listGoals, updateGoal, addGoalContribution } from '../goals/repository.js';
-import { MAX_GOAL_NAME_LENGTH, validateGoalBody, validateGoalId } from '../goals/validation.js';
-import { validatePositiveCents } from '../transactions/validation.js';
+import {
+  LABELS,
+  MAX_GOAL_NAME_LENGTH,
+  validateContribution,
+  validateGoalBody,
+  validateGoalId,
+} from '../goals/validation.js';
+import { MESSAGES } from '../validation/rules.js';
 
 // Postgres error codes, and the constraint names from db/migrations/006_create_goals.sql.
 const FOREIGN_KEY_VIOLATION = '23503';
@@ -25,6 +31,9 @@ export const GOAL_CONSTRAINTS = Object.freeze({
 
 // Sent whether the goal doesn't exist or belongs to someone else.
 const GOAL_NOT_FOUND = 'Goal not found.';
+
+// A contribution that would take saved_cents past what the API can return exactly.
+export const SAVED_TOTAL_LIMIT = 'This contribution would exceed the maximum saved total.';
 
 const violates = (err, code, constraint) => err?.code === code && err.constraint === constraint;
 
@@ -42,10 +51,10 @@ function clientErrorFor(err) {
     return new UnauthorizedError('User account no longer exists. Log in again.');
   }
   if (violates(err, CHECK_VIOLATION, GOAL_CONSTRAINTS.positiveTarget)) {
-    return { errors: { target_cents: 'target_cents must be greater than zero.' } };
+    return { errors: { target_cents: MESSAGES.positive(LABELS.target_cents) } };
   }
   if (violates(err, CHECK_VIOLATION, GOAL_CONSTRAINTS.nameLength)) {
-    return { errors: { name: `name must be 1 to ${MAX_GOAL_NAME_LENGTH} characters.` } };
+    return { errors: { name: MESSAGES.maxLength(LABELS.name, MAX_GOAL_NAME_LENGTH) } };
   }
   return null;
 }
@@ -115,45 +124,21 @@ export async function handleDeleteGoal(req, res) {
   return res.status(204).end();
 }
 
+// POST /api/goals/:id/contributions (US-49)
+// Adds { amount_cents } to the owner's goal and returns the goal with its new total.
 export async function handleAddContribution(req, res) {
-  const errors = {};
-  const idError = validateGoalId(req.params.id);
-
-  if (idError) errors.id = idError;
-
-  const body = req.body;
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    errors.body = 'Request body must be a JSON object.';
-  } else {
-    const amountError = validatePositiveCents(
-      body.amount_cents,
-      'amount_cents'
-    );
-    if (amountError) errors.amount_cents = amountError;
-  }
-
-  if (Object.keys(errors).length) {
+  const { errors, value } = validateContribution(req.params.id, req.body);
+  if (errors) {
     return res.status(400).json({ errors });
   }
 
-  const result = await addGoalContribution(
-    req.user.id,
-    req.params.id,
-    body.amount_cents
-  );
-
+  const result = await addGoalContribution(req.user.id, req.params.id, value.amount_cents);
   if (result.limitReached) {
-    return res.status(400).json({
-      errors: {
-        amount_cents: 'This contribution would exceed the maximum saved total.',
-      },
-    });
+    return res.status(400).json({ errors: { amount_cents: SAVED_TOTAL_LIMIT } });
   }
-
   if (!result.goal) {
     throw new NotFoundError(GOAL_NOT_FOUND);
   }
-
   return res.json({ goal: result.goal });
 }
 

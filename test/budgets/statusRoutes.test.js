@@ -146,13 +146,13 @@ describe('GET /api/budgets/status', () => {
   });
 
   it.each([
-    ['', { month: 'month is required, in YYYY-MM format, e.g. 2026-10.' }],
-    ['?month=', { month: 'month is required, in YYYY-MM format, e.g. 2026-10.' }],
-    ['?month=2026-13', { month: 'month must be a real month in YYYY-MM format, e.g. 2026-10.' }],
-    ['?month=2026-1', { month: 'month must be a real month in YYYY-MM format, e.g. 2026-10.' }],
-    ['?month=october', { month: 'month must be a real month in YYYY-MM format, e.g. 2026-10.' }],
-    ['?month=1899-12', { month: 'month must be in 1900 or later.' }],
-    ['?month=2026-10&month=2026-11', { month: 'month must be given only once.' }],
+    ['', { month: 'Month is required, in YYYY-MM format, for example 2026-10.' }],
+    ['?month=', { month: 'Month is required, in YYYY-MM format, for example 2026-10.' }],
+    ['?month=2026-13', { month: 'Month must be a real month in YYYY-MM format, for example 2026-10.' }],
+    ['?month=2026-1', { month: 'Month must be a real month in YYYY-MM format, for example 2026-10.' }],
+    ['?month=october', { month: 'Month must be a real month in YYYY-MM format, for example 2026-10.' }],
+    ['?month=1899-12', { month: 'Month must be between 1900-01 and 2100-12.' }],
+    ['?month=2026-10&month=2026-11', { month: 'Month must be given only once.' }],
   ])('returns 400 for %j without querying the database', async (query, errors) => {
     const response = await status(ALICE, query);
 

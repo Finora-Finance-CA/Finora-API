@@ -5,7 +5,7 @@
 //   SELECT <select list> FROM public.<table> [WHERE ...] [GROUP BY ...] [ORDER BY ...]
 //          [LIMIT $n] [OFFSET $n]
 //   INSERT INTO public.<table> (...) VALUES (...), (...) [RETURNING ...]
-//   UPDATE public.<table> SET col = $n, ... WHERE ... [RETURNING ...]
+//   UPDATE public.<table> SET col = $n | col = col + $n, ... WHERE ... [RETURNING ...]
 //   DELETE FROM public.<table> WHERE ...
 //   BEGIN / COMMIT / ROLLBACK
 //
@@ -344,19 +344,30 @@ function insert(name, [columns, values, returning], params) {
   return { rows: returning ? added.map((row) => pick(row, returning)) : [], rowCount: added.length };
 }
 
+// `column = $n`, or `column = column + $n` (adds to the stored number, e.g. a goal's
+// saved_cents). Each becomes a function from the current row to the new value.
+function assignmentFor(assignment, params) {
+  const set = /^(\w+) = \$(\d+)$/.exec(assignment);
+  if (set) {
+    const value = param(params, set[2]);
+    return [set[1], () => value];
+  }
+  const add = /^(\w+) = (\w+) \+ \$(\d+)$/.exec(assignment);
+  if (add && add[1] === add[2]) {
+    const amount = Number(param(params, add[3]));
+    return [add[1], (row) => Number(row[add[1]]) + amount];
+  }
+  throw new Error(`Fake database: unsupported assignment "${assignment}"`);
+}
+
 function update(name, [assignments, where, returning], params) {
-  const changes = Object.fromEntries(
-    columnList(assignments).map((assignment) => {
-      const match = /^(\w+) = \$(\d+)$/.exec(assignment);
-      if (!match) throw new Error(`Fake database: unsupported assignment "${assignment}"`);
-      return [match[1], param(params, match[2])];
-    })
-  );
+  const assigners = columnList(assignments).map((assignment) => assignmentFor(assignment, params));
+  const changesFor = (row) => Object.fromEntries(assigners.map(([column, compute]) => [column, compute(row)]));
   const matches = tableNamed(name).rows.filter(rowMatcher(where, params));
   // Check the changed rows first, so a clash changes nothing, as in Postgres.
-  checkUnique(name, matches.map((row) => ({ ...row, ...changes })));
+  checkUnique(name, matches.map((row) => ({ ...row, ...changesFor(row) })));
   // updated_at mirrors the <table>_set_updated_at triggers.
-  for (const row of matches) Object.assign(row, changes, { updated_at: nextTimestamp() });
+  for (const row of matches) Object.assign(row, changesFor(row), { updated_at: nextTimestamp() });
   return { rows: returning ? matches.map((row) => pick(row, returning)) : [], rowCount: matches.length };
 }
 

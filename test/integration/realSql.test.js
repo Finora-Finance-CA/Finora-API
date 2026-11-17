@@ -6,7 +6,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { pool } from '../../src/db.js';
-import { GOAL_CONSTRAINTS } from '../../src/routes/goals.js';
+import { GOAL_CONSTRAINTS, SAVED_TOTAL_LIMIT } from '../../src/routes/goals.js';
 import { ALICE, bearer } from '../support/fakeAuth.js';
 
 const app = createApp();
@@ -85,6 +85,46 @@ describe('/api/goals on Postgres', () => {
     await call('post', '/api/goals', { name: 'Trip', target_cents: 100 });
 
     await expect(pool.query(sql)).rejects.toMatchObject({ code: '23514', constraint: GOAL_CONSTRAINTS[key] });
+  });
+});
+
+describe('POST /api/goals/:id/contributions on Postgres (US-49)', () => {
+  const contribute = (id, amount_cents) => call('post', `/api/goals/${id}/contributions`, { amount_cents });
+
+  it('adds each contribution exactly, returns BIGINT totals as numbers, and the list shows them', async () => {
+    const trip = (await call('post', '/api/goals', { name: 'Trip', target_cents: 350000 })).body.goal;
+
+    for (const amount of [1, 2499, 2_147_483_647, 2_147_483_647]) expect((await contribute(trip.id, amount)).status).toBe(200);
+
+    const [listed] = (await call('get', '/api/goals')).body.goals;
+    expect(listed).toMatchObject({ id: trip.id, saved_cents: 4_294_969_794, target_cents: 350000 });
+    expect(typeof listed.saved_cents).toBe('number');
+  });
+
+  it('counts every one of several contributions sent at the same time', async () => {
+    const trip = (await call('post', '/api/goals', { name: 'Trip', target_cents: 350000 })).body.goal;
+
+    const responses = await Promise.all(Array.from({ length: 10 }, () => contribute(trip.id, 100)));
+
+    expect(responses.map((response) => response.status)).toEqual(Array(10).fill(200));
+    expect((await call('get', '/api/goals')).body.goals[0].saved_cents).toBe(1000);
+  });
+
+  it('stops at Number.MAX_SAFE_INTEGER: reaching it works, passing it is a 400 that changes nothing', async () => {
+    const trip = (await call('post', '/api/goals', { name: 'Trip', target_cents: 100 })).body.goal;
+    await pool.query('UPDATE public.goals SET saved_cents = $1 WHERE id = $2', [String(Number.MAX_SAFE_INTEGER - 10), trip.id]);
+
+    const over = await contribute(trip.id, 11);
+    expect(over.status).toBe(400);
+    expect(over.body).toEqual({ errors: { amount_cents: SAVED_TOTAL_LIMIT } });
+
+    const exact = await contribute(trip.id, 10);
+    expect(exact.status).toBe(200);
+    expect(exact.body.goal.saved_cents).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('returns 404 for a goal that does not exist', async () => {
+    expect((await contribute(987654, 100)).status).toBe(404);
   });
 });
 

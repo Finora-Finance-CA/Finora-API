@@ -116,6 +116,28 @@ describe.each(RESOURCES)('another user’s $name', (resource) => {
   });
 });
 
+describe('another user’s goal contributions (US-49)', () => {
+  it('cannot be added: POST returns 404, the same as an id that does not exist, and ALICE’s total stays', async () => {
+    const response = await call(BOB, 'post', `/api/goals/${alices.goal.id}/contributions`, { amount_cents: 2500 });
+    const missing = await call(BOB, 'post', '/api/goals/987654/contributions', { amount_cents: 2500 });
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: 'Goal not found.' });
+    expect(missing.body).toEqual(response.body);
+    await expectUnchanged(RESOURCES.find(({ name }) => name === 'goal'));
+  });
+
+  it('sends only BOB’s id in BOB’s statements', async () => {
+    const before = recordedQueries().length;
+
+    await call(BOB, 'post', `/api/goals/${alices.goal.id}/contributions`, { amount_cents: 2500, user_id: ALICE.id });
+
+    const bobs = recordedQueries().slice(before);
+    expectEveryStatementOwnedBy(bobs, BOB.id);
+    for (const { params } of bobs) expect(params).not.toContain(ALICE.id);
+  });
+});
+
 describe('another user’s spending', () => {
   it('is left out of BOB’s monthly summary', async () => {
     const response = await call(BOB, 'get', `/api/summary?month=${MONTH}`);

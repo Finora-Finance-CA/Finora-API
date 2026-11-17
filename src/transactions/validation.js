@@ -1,8 +1,21 @@
 // Validation for transaction requests: the JSON body, the :id in the URL and the
 // list's query string. Pure functions with no Express or database dependencies, so
-// they can be unit tested directly.
+// they can be unit tested directly. The shared checks and their messages are in
+// ../validation/rules.js.
 
 import { CATEGORIES, MAX_AMOUNT_CENTS, MIN_YEAR, TRANSACTION_TYPES } from '../constants.js';
+import {
+  MAX_ID,
+  MESSAGES,
+  collectErrors,
+  isJsonObject,
+  isMissing,
+  validateCents,
+  validateChoice,
+  validateDate as validateDateRule,
+  validateId,
+  validateText,
+} from '../validation/rules.js';
 
 // Re-exported so existing imports from this module keep working.
 export { CATEGORIES, MAX_AMOUNT_CENTS, MIN_YEAR, TRANSACTION_TYPES };
@@ -13,96 +26,57 @@ export const MAX_SEARCH_LENGTH = MAX_DESCRIPTION_LENGTH;
 // Far beyond any real history at 20 per page; stops absurd OFFSETs reaching Postgres.
 export const MAX_PAGE = 100_000;
 
-// Largest value a Postgres BIGINT column (transactions.id) can hold.
-export const MAX_TRANSACTION_ID = 9_223_372_036_854_775_807n;
+export const MAX_TRANSACTION_ID = MAX_ID;
 
-const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
-// Digits only: no sign, decimals or leading zeros. Identity ids start at 1.
-const TRANSACTION_ID_PATTERN = /^[1-9]\d*$/;
+// How each field is named in messages.
+export const LABELS = Object.freeze({
+  amount_cents: 'Amount',
+  date: 'Date',
+  type: 'Type',
+  category: 'Category',
+  description: 'Description',
+  page: 'Page',
+  q: 'Search',
+  from: 'From date',
+  to: 'To date',
+});
+
 const PAGE_PATTERN = /^[1-9]\d*$/;
 
-function isMissing(value) {
-  return value === undefined || value === null || value === '';
+/**
+ * A money amount in integer cents (see validateCents in ../validation/rules.js).
+ *
+ * @param {unknown} value
+ * @param {string} [label] How the message names the field.
+ * @returns {string|null} An error message, or null if it's valid.
+ */
+export function validatePositiveCents(value, label = LABELS.amount_cents) {
+  return validateCents(value, label);
 }
 
 /**
- * Checks a money amount in integer cents that must be above zero and fit an INTEGER
- * column: a transaction's amount_cents or a budget's limit_cents.
+ * A required YYYY-MM-DD date (see validateDate in ../validation/rules.js).
  *
  * @param {unknown} value
- * @param {string} [field] Named in the message.
- * @returns {string|null} An error message, or null if it's valid.
+ * @param {string} [label]
+ * @returns {string|null}
  */
-export function validatePositiveCents(value, field = 'amount_cents') {
-  if (isMissing(value)) return `${field} is required.`;
-  if (typeof value !== 'number' || !Number.isInteger(value)) {
-    return `${field} must be a whole number of cents, e.g. 1250 for $12.50.`;
-  }
-  if (value <= 0) return `${field} must be greater than zero.`;
-  if (value > MAX_AMOUNT_CENTS) return `${field} must be at most ${MAX_AMOUNT_CENTS}.`;
-  return null;
-}
-
-/**
- * Checks a required YYYY-MM-DD date that is a real calendar day in MIN_YEAR or later:
- * a transaction's date, the list's from and to, or a goal's target_date.
- *
- * @param {unknown} value
- * @param {string} [field] Named in the message.
- * @returns {string|null} An error message, or null if it's valid.
- */
-export function validateDate(value, field = 'date') {
-  if (isMissing(value)) return `${field} is required.`;
-  const match = typeof value === 'string' ? DATE_PATTERN.exec(value) : null;
-  if (!match) return `${field} must be a string in YYYY-MM-DD format.`;
-
-  const [year, month, day] = match.slice(1).map(Number);
-  // Date.UTC rolls invalid days over (Feb 30 becomes Mar 2), so compare the parts back.
-  const parsed = new Date(Date.UTC(year, month - 1, day));
-  const isRealDate =
-    parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
-  if (!isRealDate) return `${field} must be a real calendar date.`;
-  if (year < MIN_YEAR) return `${field} must be in ${MIN_YEAR} or later.`;
-  return null;
-}
-
-function validateType(value) {
-  if (isMissing(value)) return 'type is required.';
-  if (!TRANSACTION_TYPES.includes(value)) return `type must be one of: ${TRANSACTION_TYPES.join(', ')}.`;
-  return null;
-}
-
-function validateCategory(value, type) {
-  if (isMissing(value)) {
-    return type === 'expense' ? 'category is required for an expense.' : null;
-  }
-  if (!CATEGORIES.includes(value)) return `category must be one of: ${CATEGORIES.join(', ')}.`;
-  return null;
-}
-
-function validateDescription(value) {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== 'string') return 'description must be a string.';
-  if (value.trim().length > MAX_DESCRIPTION_LENGTH) {
-    return `description must be at most ${MAX_DESCRIPTION_LENGTH} characters.`;
-  }
-  return null;
+export function validateDate(value, label = LABELS.date) {
+  return validateDateRule(value, label);
 }
 
 /**
  * Checks a transaction id taken from the URL, e.g. PUT /api/transactions/:id.
  *
- * Without this, a value like "abc" or "1.5" would reach Postgres, fail to cast to
- * BIGINT and turn into a 500 instead of a 400.
- *
  * @param {unknown} value The raw route parameter.
  * @returns {string|null} An error message, or null if the id is valid.
  */
-export function validateTransactionId(value) {
-  if (typeof value !== 'string' || !TRANSACTION_ID_PATTERN.test(value) || BigInt(value) > MAX_TRANSACTION_ID) {
-    return 'id must be a positive whole number.';
-  }
-  return null;
+export const validateTransactionId = validateId;
+
+function validateCategory(value, type) {
+  // Only an expense needs a category; an income may have one.
+  return validateChoice(value, LABELS.category, CATEGORIES, { required: false }) ??
+    (type === 'expense' && isMissing(value) ? `${LABELS.category} is required for an expense.` : null);
 }
 
 /**
@@ -116,21 +90,19 @@ export function validateTransactionId(value) {
  *   Either every invalid field with a message, or the cleaned values ready to save.
  */
 export function validateTransactionBody(body) {
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { errors: { body: 'Request body must be a JSON object. Set Content-Type: application/json.' } };
+  if (!isJsonObject(body)) {
+    return { errors: { body: MESSAGES.bodyNotObject } };
   }
 
   const { amount_cents, date, type, category, description } = body;
-  const checks = {
-    amount_cents: validatePositiveCents(amount_cents),
-    date: validateDate(date),
-    type: validateType(type),
+  const errors = collectErrors({
+    amount_cents: validateCents(amount_cents, LABELS.amount_cents),
+    date: validateDateRule(date, LABELS.date),
+    type: validateChoice(type, LABELS.type, TRANSACTION_TYPES),
     category: validateCategory(category, type),
-    description: validateDescription(description),
-  };
-
-  const errors = Object.fromEntries(Object.entries(checks).filter(([, message]) => message !== null));
-  if (Object.keys(errors).length > 0) {
+    description: validateText(description, LABELS.description, { max: MAX_DESCRIPTION_LENGTH }),
+  });
+  if (errors) {
     return { errors };
   }
 
@@ -158,23 +130,21 @@ export function validateTransactionBody(body) {
  * @property {string|null} to YYYY-MM-DD, inclusive; null for no upper bound.
  */
 
-const SINGLE_VALUE = (field) => `${field} must be given only once.`;
-
 function validatePage(value) {
   if (value === undefined || value === '') return { value: 1 };
-  if (Array.isArray(value)) return { error: SINGLE_VALUE('page') };
+  if (Array.isArray(value)) return { error: MESSAGES.onlyOnce(LABELS.page) };
   if (typeof value !== 'string' || !PAGE_PATTERN.test(value) || Number(value) > MAX_PAGE) {
-    return { error: `page must be a whole number from 1 to ${MAX_PAGE}.` };
+    return { error: `${LABELS.page} must be a whole number from 1 to ${MAX_PAGE.toLocaleString('en-CA')}.` };
   }
   return { value: Number(value) };
 }
 
 function validateSearch(value) {
   if (value === undefined) return { value: null };
-  if (Array.isArray(value)) return { error: SINGLE_VALUE('q') };
-  if (typeof value !== 'string') return { error: 'q must be text.' };
+  if (Array.isArray(value)) return { error: MESSAGES.onlyOnce(LABELS.q) };
+  const error = validateText(value, LABELS.q, { max: MAX_SEARCH_LENGTH });
+  if (error) return { error };
   const text = value.trim();
-  if (text.length > MAX_SEARCH_LENGTH) return { error: `q must be at most ${MAX_SEARCH_LENGTH} characters.` };
   return { value: text === '' ? null : text };
 }
 
@@ -182,11 +152,11 @@ function validateSearch(value) {
 function validateCategories(value) {
   if (value === undefined) return { value: [] };
   const values = Array.isArray(value) ? value : [value];
-  if (values.some((item) => typeof item !== 'string')) return { error: 'category must be text.' };
+  if (values.some((item) => typeof item !== 'string')) return { error: MESSAGES.text(LABELS.category) };
   // An empty value (?category=) means no filter, as an unticked box would.
   const chosen = values.filter((item) => item !== '');
   if (chosen.some((item) => !CATEGORIES.includes(item))) {
-    return { error: `category must be one of: ${CATEGORIES.join(', ')}.` };
+    return { error: MESSAGES.choice(LABELS.category, CATEGORIES) };
   }
   // In the API's category order, without repeats.
   return { value: CATEGORIES.filter((category) => chosen.includes(category)) };
@@ -194,8 +164,8 @@ function validateCategories(value) {
 
 function validateBound(value, field) {
   if (value === undefined || value === '') return { value: null };
-  if (Array.isArray(value)) return { error: SINGLE_VALUE(field) };
-  const error = validateDate(value, field);
+  if (Array.isArray(value)) return { error: MESSAGES.onlyOnce(LABELS[field]) };
+  const error = validateDateRule(value, LABELS[field]);
   return error ? { error } : { value };
 }
 
@@ -224,15 +194,11 @@ export function validateListQuery(query = {}) {
   // strings compare correctly as text.
   const { from, to } = checks;
   if (from.value && to.value && from.value > to.value) {
-    checks.to = { error: 'to must be on or after from.' };
+    checks.to = { error: `${LABELS.to} must be on or after the ${LABELS.from}.` };
   }
 
-  const errors = Object.fromEntries(
-    Object.entries(checks)
-      .filter(([, check]) => check.error)
-      .map(([field, check]) => [field, check.error])
-  );
-  if (Object.keys(errors).length > 0) {
+  const errors = collectErrors(Object.fromEntries(Object.entries(checks).map(([field, check]) => [field, check.error ?? null])));
+  if (errors) {
     return { errors };
   }
 
