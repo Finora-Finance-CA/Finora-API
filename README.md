@@ -32,7 +32,7 @@ Fill in `.env` (real values are in the team's credential document):
 | `CLIENT_ORIGIN` | No | `http://localhost:5173`. Sites allowed to call the API from a browser (see [CORS](#cors)). Not needed locally, because the Vite proxy makes requests same-origin. |
 | `NODE_ENV` | No | Leave unset locally. `production` on Render. |
 
-The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `006_create_goals.sql`); it only applies files the shared database doesn't have yet.
+The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `007_add_query_indexes.sql`); it only applies files the shared database doesn't have yet.
 
 Then start the server:
 
@@ -239,6 +239,35 @@ Every failure prints `Seed failed: ...` with what to do, and exits with code 1 w
 | `Supabase rejected sign up ...` | Supabase's reason follows, for example an email domain it won't accept. Use a different address. |
 | `... has to confirm their email` | Email confirmation was turned on in Supabase. Turn it off, or confirm the address, then run it again. |
 | `Could not reach Supabase ...` | Check `SUPABASE_URL` and your connection. |
+
+## Performance check
+US-62 (NFR-06): the transactions page and the dashboard load in under 2 seconds with 1,000 transactions. Migration `007_add_query_indexes.sql` adds the indexes the queries need (see the comments in the file for which query uses which, and why search has no trigram index). Two scripts check it with real data; nobody runs them automatically.
+
+| Script | What it does |
+| --- | --- |
+| `npm run seed:perf` | Gives the first sample user (`SEED_USER_1_EMAIL`) 1,000 realistic transactions over the last 12 months: every category, income and expenses, the same set each run. Running it again replaces that set, so there are never more than 1,000; the user's other transactions and everyone else's are never touched. `npm run seed:perf -- --remove` takes them away. Refuses to run when `NODE_ENV` is `production`. The perf rows are recognised by a `created_at` in 2001 (one millisecond apart), which the app never shows. `npm run seed` resets the sample users and removes them too. |
+| `npm run bench` | Times the endpoints the pages call, against the API on this machine, and prints p50, p95 and max per endpoint with PASS or FAIL. Read-only (GET requests only). Needs `BENCH_TOKEN`; optional `BENCH_API_URL` (default `http://localhost:4000`, must be localhost), `BENCH_RUNS` (default 30) and `BENCH_MONTH` (default this month). |
+
+**Passing:** every line says PASS and the last line is `PASS: every endpoint is within its budget.` (the script exits with code 0). Each single endpoint needs p95 of 500 ms or less, and the dashboard's four requests together 1,000 ms or less, which leaves at least a second of the 2-second budget for the browser. The front-end's half is checked by `npm run e2e` in Finora-FrontEnd (`e2e/performance.spec.js`).
+
+### Steps (PowerShell, in Finora-API)
+1. Apply migration 007 to the database in `.env`: `npm run migrate`. It prints `Applied 007_add_query_indexes.sql`, then `Migrations complete.` Running it again prints `No pending migrations.`
+2. Load the data: `npm run seed:perf`. It prints `... now has 1000 perf transactions ...`.
+3. Start the API in a second PowerShell window: `npm run dev`.
+4. Get a token for the sample user, without printing anything from `.env`:
+   ```powershell
+   $cfg = @{}
+   Get-Content .env | ForEach-Object { if ($_ -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)$') { $cfg[$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'") } }
+   $body = @{ email = $cfg.SEED_USER_1_EMAIL; password = $cfg.SEED_USER_1_PASSWORD } | ConvertTo-Json
+   $session = Invoke-RestMethod -Method Post -Uri "$($cfg.SUPABASE_URL)/auth/v1/token?grant_type=password" -Headers @{ apikey = $cfg.SUPABASE_PUBLISHABLE_KEY } -ContentType 'application/json' -Body $body
+   $env:BENCH_TOKEN = $session.access_token
+   Remove-Variable cfg, body, session
+   ```
+   The token lasts an hour; run this again if the bench says it was rejected.
+5. `npm run bench`. It takes a minute or two.
+6. When you're done: `npm run seed:perf -- --remove`, and `Remove-Item Env:BENCH_TOKEN`.
+
+The local API reaches the database over the internet, so these times include that round trip. If everything fails by a similar amount, check the round trip first: `Measure-Command { Invoke-RestMethod http://localhost:4000/health }`.
 
 ## Categories
 The categories are stored in the `public.categories` table (migration `004_create_categories.sql`): `Food`, `Transportation`, `Housing`, `Entertainment` and `Other`, in that order. `transactions.category` is a foreign key to it, so the database itself refuses any other category. An income may have no category.
@@ -841,7 +870,7 @@ Any other fields are ignored. The amount is added in one statement scoped to the
 The API runs on **Render** (free web service), set up by `render.yaml` in this repo. The front-end runs on Vercel; see the Deployment section in [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd#deployment). Secret values are only ever typed into the Render dashboard, never committed.
 
 ### 1. Order of operations
-1. Check the database (step 3 below): migrations 001 to 006 applied.
+1. Check the database (step 3 below): migrations 001 to 007 applied.
 2. Deploy the API on Render (step 2) and note its URL, for example `https://finora-api.onrender.com`.
 3. Deploy the front-end on Vercel with `VITE_API_URL` set to that URL, and note the front-end's URL, for example `https://finora.vercel.app`.
 4. Put the front-end's URL in the API's `CLIENT_ORIGIN` on Render.
@@ -876,7 +905,7 @@ The API runs on **Render** (free web service), set up by `render.yaml` in this r
 **Never run on Render:** migrations and the seed. The build and start commands don't run them, `test/deployment.test.js` fails if `render.yaml` ever does, and `npm run seed` refuses to run because `NODE_ENV` is `production`.
 
 ### 3. Supabase settings
-1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `006_create_goals.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
+1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `007_add_query_indexes.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
 2. **Auth URLs:** **Authentication**, then **URL Configuration**:
    - **Site URL:** the front-end's URL, for example `https://finora.vercel.app`.
    - **Redirect URLs:** add `https://finora.vercel.app/**`, and keep `http://localhost:5173/**` for local development.
