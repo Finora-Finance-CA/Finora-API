@@ -62,6 +62,7 @@ describe('the route list this test reads from the app', () => {
         ['POST', '/api/goals'],
         ['PUT', '/api/goals/1'],
         ['DELETE', '/api/goals/1'],
+        ['POST', '/api/goals/1/contributions'],
       ])
     );
   });

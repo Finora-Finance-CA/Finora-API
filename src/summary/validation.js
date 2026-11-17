@@ -1,11 +1,17 @@
 // Validation for GET /api/summary?month=YYYY-MM. Pure functions with no Express or
 // database dependencies.
 
-import { MIN_YEAR } from '../constants.js';
+import { MAX_YEAR, MIN_YEAR } from '../constants.js';
+import { MESSAGES } from '../validation/rules.js';
 import { trendRange } from './trend.js';
 
 const MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
-const MONTH_FORMAT = 'month must be a real month in YYYY-MM format, e.g. 2026-10.';
+export const MONTH_MESSAGES = Object.freeze({
+  required: 'Month is required, in YYYY-MM format, for example 2026-10.',
+  format: 'Month must be a real month in YYYY-MM format, for example 2026-10.',
+  range: `Month must be between ${MIN_YEAR}-01 and ${MAX_YEAR}-12.`,
+  onlyOnce: MESSAGES.onlyOnce('Month'),
+});
 
 const pad = (number, width) => String(number).padStart(width, '0');
 
@@ -44,19 +50,19 @@ export function monthRange(year, month) {
 export function validateSummaryQuery(query = {}) {
   const { month } = query;
   if (month === undefined || month === '') {
-    return { errors: { month: 'month is required, in YYYY-MM format, e.g. 2026-10.' } };
+    return { errors: { month: MONTH_MESSAGES.required } };
   }
   if (Array.isArray(month)) {
-    return { errors: { month: 'month must be given only once.' } };
+    return { errors: { month: MONTH_MESSAGES.onlyOnce } };
   }
 
   const match = typeof month === 'string' ? MONTH_PATTERN.exec(month) : null;
   const [year, monthNumber] = match ? match.slice(1).map(Number) : [];
   if (!match || monthNumber < 1 || monthNumber > 12) {
-    return { errors: { month: MONTH_FORMAT } };
+    return { errors: { month: MONTH_MESSAGES.format } };
   }
-  if (year < MIN_YEAR) {
-    return { errors: { month: `month must be in ${MIN_YEAR} or later.` } };
+  if (year < MIN_YEAR || year > MAX_YEAR) {
+    return { errors: { month: MONTH_MESSAGES.range } };
   }
 
   return { errors: null, value: { month, ...monthRange(year, monthNumber) } };
@@ -82,12 +88,12 @@ export function validateTrendQuery(query = {}) {
   let count = DEFAULT_TREND_MONTHS;
   const { months } = query;
   if (Array.isArray(months)) {
-    errors.months = 'months must be given only once.';
-  } else if (months !== undefined) {
+    errors.months = MESSAGES.onlyOnce('Months');
+  } else if (months !== undefined && months !== '') {
     const valid = typeof months === 'string' && /^\d{1,2}$/.test(months);
     count = valid ? Number(months) : NaN;
     if (!valid || count < 1 || count > MAX_TREND_MONTHS) {
-      errors.months = `months must be a whole number from 1 to ${MAX_TREND_MONTHS}.`;
+      errors.months = `Months must be a whole number from 1 to ${MAX_TREND_MONTHS}.`;
     }
   }
 

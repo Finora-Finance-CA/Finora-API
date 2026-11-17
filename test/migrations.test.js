@@ -65,3 +65,47 @@ describe('004_create_categories.sql', () => {
     expect(await migration('004_create_categories.sql')).toMatch(/CONSTRAINT transactions_category_fkey\b/);
   });
 });
+
+describe('007_add_query_indexes.sql (US-62)', () => {
+  const sql = () => migration('007_add_query_indexes.sql');
+  const statements = async () =>
+    (await sql())
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('--'))
+      .join('\n')
+      .split(';')
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+
+  it('is safe to run again: every CREATE uses IF NOT EXISTS and every DROP uses IF EXISTS', async () => {
+    for (const statement of await statements()) {
+      if (/^CREATE INDEX/i.test(statement)) expect(statement).toMatch(/^CREATE INDEX IF NOT EXISTS /i);
+      if (/^DROP INDEX/i.test(statement)) expect(statement).toMatch(/^DROP INDEX IF EXISTS /i);
+    }
+  });
+
+  it('indexes the transaction list in its exact order, with what the monthly totals read', async () => {
+    expect(await sql()).toMatch(
+      /CREATE INDEX IF NOT EXISTS transactions_user_list_idx\s+ON public\.transactions \(user_id, date DESC, created_at DESC, id DESC\)\s+INCLUDE \(type, category, amount_cents\)/
+    );
+  });
+
+  it('indexes the category filter and the expense totals', async () => {
+    const text = await sql();
+    expect(text).toMatch(/transactions_user_category_date_idx\s+ON public\.transactions \(user_id, category, date DESC\)/);
+    expect(text).toMatch(/transactions_user_type_date_idx\s+ON public\.transactions \(user_id, type, date\)\s+INCLUDE \(category, amount_cents\)/);
+  });
+
+  it('indexes goals in the order they are listed, and drops the indexes the new ones replace', async () => {
+    const text = await sql();
+    expect(text).toMatch(/goals_user_created_idx\s+ON public\.goals \(user_id, created_at DESC, id DESC\)/);
+    expect(text).toMatch(/DROP INDEX IF EXISTS public\.transactions_user_id_date_idx;/);
+    expect(text).toMatch(/DROP INDEX IF EXISTS public\.goals_user_id_idx;/);
+  });
+
+  it('adds no extension and no CONCURRENTLY, which can’t run inside the runner’s transaction', async () => {
+    const text = (await statements()).join('\n');
+    expect(text).not.toMatch(/CREATE EXTENSION|CONCURRENTLY/i);
+    expect(text).not.toMatch(/^\s*(BEGIN|COMMIT)\b/im);
+  });
+});

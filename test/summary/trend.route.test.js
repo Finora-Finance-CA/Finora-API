@@ -101,11 +101,11 @@ describe('GET /api/summary/trend', () => {
   });
 
   it.each([
-    ['', { month: 'month is required, in YYYY-MM format, e.g. 2026-10.' }],
-    ['?month=2026-13', { month: 'month must be a real month in YYYY-MM format, e.g. 2026-10.' }],
-    ['?month=2026-11&months=0', { months: 'months must be a whole number from 1 to 24.' }],
-    ['?month=2026-11&months=25', { months: 'months must be a whole number from 1 to 24.' }],
-    ['?month=2026-11&months=6&months=12', { months: 'months must be given only once.' }],
+    ['', { month: 'Month is required, in YYYY-MM format, for example 2026-10.' }],
+    ['?month=2026-13', { month: 'Month must be a real month in YYYY-MM format, for example 2026-10.' }],
+    ['?month=2026-11&months=0', { months: 'Months must be a whole number from 1 to 24.' }],
+    ['?month=2026-11&months=25', { months: 'Months must be a whole number from 1 to 24.' }],
+    ['?month=2026-11&months=6&months=12', { months: 'Months must be given only once.' }],
   ])('returns 400 for %j without querying the database', async (query, errors) => {
     const response = await trend(ALICE, query);
 

@@ -34,9 +34,9 @@ describe('validateTransactionBody', () => {
 
   it('reports every missing required field at once', () => {
     expect(validateTransactionBody({}).errors).toEqual({
-      amount_cents: 'amount_cents is required.',
-      date: 'date is required.',
-      type: 'type is required.',
+      amount_cents: 'Amount is required.',
+      date: 'Date is required.',
+      type: 'Type is required.',
     });
   });
 
@@ -47,7 +47,7 @@ describe('validateTransactionBody', () => {
     ['undefined (no JSON body)', undefined],
   ])('rejects a body that is %s', (_, body) => {
     expect(validateTransactionBody(body).errors).toEqual({
-      body: 'Request body must be a JSON object. Set Content-Type: application/json.',
+      body: 'Request body must be a JSON object.',
     });
   });
 
@@ -58,14 +58,14 @@ describe('validateTransactionBody', () => {
 
   describe('amount_cents', () => {
     it.each([
-      ['zero', 0, 'amount_cents must be greater than zero.'],
-      ['negative', -500, 'amount_cents must be greater than zero.'],
-      ['a decimal', 12.5, 'amount_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-      ['a numeric string', '1250', 'amount_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-      ['a non-numeric string', 'twelve', 'amount_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-      ['a boolean', true, 'amount_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-      ['one more than the column holds', MAX_AMOUNT_CENTS + 1, `amount_cents must be at most ${MAX_AMOUNT_CENTS}.`],
-      ['an empty string', '', 'amount_cents is required.'],
+      ['zero', 0, 'Amount must be greater than 0.'],
+      ['negative', -500, 'Amount must be greater than 0.'],
+      ['a decimal', 12.5, 'Amount must be a whole number of cents, for example 1250 for $12.50.'],
+      ['a numeric string', '1250', 'Amount must be a whole number of cents, for example 1250 for $12.50.'],
+      ['a non-numeric string', 'twelve', 'Amount must be a whole number of cents, for example 1250 for $12.50.'],
+      ['a boolean', true, 'Amount must be a whole number of cents, for example 1250 for $12.50.'],
+      ['one more than the column holds', MAX_AMOUNT_CENTS + 1, 'Amount must be $21,474,836.47 or less.'],
+      ['an empty string', '', 'Amount is required.'],
     ])('rejects %s', (_, amount_cents, message) => {
       expect(errorsFor({ amount_cents })).toEqual({ amount_cents: message });
     });
@@ -77,15 +77,15 @@ describe('validateTransactionBody', () => {
 
   describe('date', () => {
     it.each([
-      ['month 13', '2026-13-01', 'date must be a real calendar date.'],
-      ['February 30th', '2026-02-30', 'date must be a real calendar date.'],
-      ['February 29th outside a leap year', '2025-02-29', 'date must be a real calendar date.'],
-      ['day zero', '2026-10-00', 'date must be a real calendar date.'],
-      ['slashes', '2026/10/05', 'date must be a string in YYYY-MM-DD format.'],
-      ['day-month-year order', '05-10-2026', 'date must be a string in YYYY-MM-DD format.'],
-      ['a timestamp', '2026-10-05T12:00:00Z', 'date must be a string in YYYY-MM-DD format.'],
-      ['a number', 20261005, 'date must be a string in YYYY-MM-DD format.'],
-      ['a year before 1900', '1899-12-31', 'date must be in 1900 or later.'],
+      ['month 13', '2026-13-01', 'Date must be a real calendar date.'],
+      ['February 30th', '2026-02-30', 'Date must be a real calendar date.'],
+      ['February 29th outside a leap year', '2025-02-29', 'Date must be a real calendar date.'],
+      ['day zero', '2026-10-00', 'Date must be a real calendar date.'],
+      ['slashes', '2026/10/05', 'Date must be in YYYY-MM-DD format, for example 2026-10-05.'],
+      ['day-month-year order', '05-10-2026', 'Date must be in YYYY-MM-DD format, for example 2026-10-05.'],
+      ['a timestamp', '2026-10-05T12:00:00Z', 'Date must be in YYYY-MM-DD format, for example 2026-10-05.'],
+      ['a number', 20261005, 'Date must be in YYYY-MM-DD format, for example 2026-10-05.'],
+      ['a year before 1900', '1899-12-31', 'Date must be between 1900-01-01 and 2100-12-31.'],
     ])('rejects %s', (_, date, message) => {
       expect(errorsFor({ date })).toEqual({ date: message });
     });
@@ -97,14 +97,14 @@ describe('validateTransactionBody', () => {
 
   describe('type', () => {
     it.each(['transfer', 'Expense', 'INCOME'])('rejects %s', (type) => {
-      expect(errorsFor({ type })).toEqual({ type: 'type must be one of: income, expense.' });
+      expect(errorsFor({ type })).toEqual({ type: 'Type must be income or expense.' });
     });
   });
 
   describe('category', () => {
     it.each(['Groceries', 'food', 'FOOD'])('rejects the unknown category %s', (category) => {
       expect(errorsFor({ category })).toEqual({
-        category: 'category must be one of: Food, Transportation, Housing, Entertainment, Other.',
+        category: 'Category must be one of Food, Transportation, Housing, Entertainment or Other.',
       });
     });
 
@@ -113,7 +113,7 @@ describe('validateTransactionBody', () => {
       ['null', null],
       ['empty', ''],
     ])('requires a category on an expense when it is %s', (_, category) => {
-      expect(errorsFor({ category })).toEqual({ category: 'category is required for an expense.' });
+      expect(errorsFor({ category })).toEqual({ category: 'Category is required for an expense.' });
     });
 
     it.each(['Food', 'Transportation', 'Housing', 'Entertainment', 'Other'])('accepts %s', (category) => {
@@ -124,7 +124,7 @@ describe('validateTransactionBody', () => {
   describe('description', () => {
     it('rejects one character over the limit', () => {
       expect(errorsFor({ description: 'x'.repeat(MAX_DESCRIPTION_LENGTH + 1) })).toEqual({
-        description: `description must be at most ${MAX_DESCRIPTION_LENGTH} characters.`,
+        description: `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer.`,
       });
     });
 
@@ -136,7 +136,7 @@ describe('validateTransactionBody', () => {
     });
 
     it('rejects a non-string description', () => {
-      expect(errorsFor({ description: 42 })).toEqual({ description: 'description must be a string.' });
+      expect(errorsFor({ description: 42 })).toEqual({ description: 'Description must be text.' });
     });
 
     it.each([
@@ -166,7 +166,7 @@ describe('validateTransactionId', () => {
     ['a number instead of a string', 1],
     ['missing', undefined],
   ])('rejects %s', (_, id) => {
-    expect(validateTransactionId(id)).toBe('id must be a positive whole number.');
+    expect(validateTransactionId(id)).toBe('ID must be a positive whole number.');
   });
 });
 
@@ -206,40 +206,40 @@ describe('validateListQuery', () => {
   });
 
   it.each(['0', '-2', '1.0', '1e2', ' 1', '01', String(MAX_PAGE + 1)])('rejects page %s', (page) => {
-    expect(validateListQuery({ page }).errors).toEqual({ page: `page must be a whole number from 1 to ${MAX_PAGE}.` });
+    expect(validateListQuery({ page }).errors).toEqual({ page: 'Page must be a whole number from 1 to 100,000.' });
   });
 
   it('accepts a search of exactly the limit and rejects one character more', () => {
     expect(validateListQuery({ q: 'x'.repeat(MAX_SEARCH_LENGTH) }).errors).toBeNull();
     expect(validateListQuery({ q: 'x'.repeat(MAX_SEARCH_LENGTH + 1) }).errors).toEqual({
-      q: `q must be at most ${MAX_SEARCH_LENGTH} characters.`,
+      q: `Search must be ${MAX_SEARCH_LENGTH} characters or fewer.`,
     });
   });
 
   it.each([
-    ['page', { page: ['1', '2'] }],
-    ['q', { q: ['a', 'b'] }],
-    ['from', { from: ['2026-01-01', '2026-02-01'] }],
-    ['to', { to: ['2026-01-01', '2026-02-01'] }],
-  ])('rejects %s given more than once', (field, query) => {
-    expect(validateListQuery(query).errors).toEqual({ [field]: `${field} must be given only once.` });
+    ['page', 'Page', { page: ['1', '2'] }],
+    ['q', 'Search', { q: ['a', 'b'] }],
+    ['from', 'From date', { from: ['2026-01-01', '2026-02-01'] }],
+    ['to', 'To date', { to: ['2026-01-01', '2026-02-01'] }],
+  ])('rejects %s given more than once', (field, label, query) => {
+    expect(validateListQuery(query).errors).toEqual({ [field]: `${label} must be given only once.` });
   });
 
   it('rejects a nested object, as ?q[a]=b might parse to', () => {
-    expect(validateListQuery({ q: { a: 'b' } }).errors).toEqual({ q: 'q must be text.' });
-    expect(validateListQuery({ category: { a: 'b' } }).errors).toEqual({ category: 'category must be text.' });
+    expect(validateListQuery({ q: { a: 'b' } }).errors).toEqual({ q: 'Search must be text.' });
+    expect(validateListQuery({ category: { a: 'b' } }).errors).toEqual({ category: 'Category must be text.' });
   });
 
   it('allows from and to on the same day, and rejects to before from', () => {
     expect(validateListQuery({ from: '2026-09-15', to: '2026-09-15' }).errors).toBeNull();
     expect(validateListQuery({ from: '2026-09-16', to: '2026-09-15' }).errors).toEqual({
-      to: 'to must be on or after from.',
+      to: 'To date must be on or after the From date.',
     });
   });
 
   it('does not compare the range when one end is already invalid', () => {
     expect(validateListQuery({ from: '2026-13-01', to: '2026-01-01' }).errors).toEqual({
-      from: 'from must be a real calendar date.',
+      from: 'From date must be a real calendar date.',
     });
   });
 });

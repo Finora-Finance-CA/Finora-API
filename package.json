@@ -3,12 +3,15 @@
   "version": "1.0.0",
   "description": "Express API for Finora, a personal finance and budget tracking app.",
   "scripts": {
+    "lint": "eslint .",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.js",
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "migrate": "node scripts/migrate.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "seed:perf": "node scripts/seedPerf.js",
+    "bench": "node scripts/bench.js"
   },
   "repository": {
     "type": "git",
@@ -29,6 +32,9 @@
     "pg": "^8.23.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0",
     "supertest": "^7.3.1",
     "vitest": "^5.0.3"
   },

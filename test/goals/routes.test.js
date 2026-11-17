@@ -114,12 +114,12 @@ describe('POST /api/goals', () => {
   });
 
   it.each([
-    ['name', { name: '' }, 'name is required.'],
-    ['name', { name: 'x'.repeat(61) }, 'name must be at most 60 characters.'],
-    ['target_cents', { target_cents: 0 }, 'target_cents must be greater than zero.'],
-    ['target_cents', { target_cents: -100 }, 'target_cents must be greater than zero.'],
-    ['target_cents', { target_cents: '350000' }, 'target_cents must be a whole number of cents, e.g. 1250 for $12.50.'],
-    ['target_date', { target_date: '2027-02-30' }, 'target_date must be a real calendar date.'],
+    ['name', { name: '' }, 'Name is required.'],
+    ['name', { name: 'x'.repeat(61) }, 'Name must be 60 characters or fewer.'],
+    ['target_cents', { target_cents: 0 }, 'Target must be greater than 0.'],
+    ['target_cents', { target_cents: -100 }, 'Target must be greater than 0.'],
+    ['target_cents', { target_cents: '350000' }, 'Target must be a whole number of cents, for example 1250 for $12.50.'],
+    ['target_date', { target_date: '2027-02-30' }, 'Target date must be a real calendar date.'],
   ])('returns 400 for an invalid %s, and saves nothing', async (field, change, message) => {
     const response = await as(ALICE).create({ ...TRIP, ...change });
 
@@ -133,9 +133,9 @@ describe('POST /api/goals', () => {
 
     expect(response.body).toEqual({
       errors: {
-        name: 'name is required.',
-        target_cents: 'target_cents must be greater than zero.',
-        target_date: 'target_date must be a string in YYYY-MM-DD format.',
+        name: 'Name is required.',
+        target_cents: 'Target must be greater than 0.',
+        target_date: 'Target date must be in YYYY-MM-DD format, for example 2026-10-05.',
       },
     });
   });
@@ -152,8 +152,8 @@ describe('POST /api/goals', () => {
   });
 
   it.each([
-    ['the target CHECK fails', pgError('23514', 'goals_target_cents_positive'), 400, { errors: { target_cents: 'target_cents must be greater than zero.' } }],
-    ['the name CHECK fails', pgError('23514', 'goals_name_length'), 400, { errors: { name: 'name must be 1 to 60 characters.' } }],
+    ['the target CHECK fails', pgError('23514', 'goals_target_cents_positive'), 400, { errors: { target_cents: 'Target must be greater than 0.' } }],
+    ['the name CHECK fails', pgError('23514', 'goals_name_length'), 400, { errors: { name: 'Name must be 60 characters or fewer.' } }],
     ['the user no longer exists', pgError('23503', 'goals_user_id_fkey'), 401, { error: 'User account no longer exists. Log in again.' }],
   ])('returns a clean %s-style error when %s', async (_, error, status, body) => {
     failNextQuery(error);
@@ -223,7 +223,7 @@ describe('PUT /api/goals/:id', () => {
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
-      errors: { name: 'name is required.', target_cents: 'target_cents must be greater than zero.' },
+      errors: { name: 'Name is required.', target_cents: 'Target must be greater than 0.' },
     });
     expect(stored()).toEqual([goal]);
   });
@@ -232,7 +232,7 @@ describe('PUT /api/goals/:id', () => {
     const response = await as(ALICE).update('abc', { name: 'Trip', target_cents: 0 });
 
     expect(response.body).toEqual({
-      errors: { id: 'id must be a positive whole number.', target_cents: 'target_cents must be greater than zero.' },
+      errors: { id: 'ID must be a positive whole number.', target_cents: 'Target must be greater than 0.' },
     });
   });
 
@@ -240,7 +240,7 @@ describe('PUT /api/goals/:id', () => {
     const response = await as(ALICE).update(id, TRIP);
 
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({ errors: { id: 'id must be a positive whole number.' } });
+    expect(response.body).toEqual({ errors: { id: 'ID must be a positive whole number.' } });
     expect(recordedQueries()).toEqual([]);
   });
 });
@@ -280,7 +280,7 @@ describe('DELETE /api/goals/:id', () => {
     const response = await as(ALICE).remove(id);
 
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({ errors: { id: 'id must be a positive whole number.' } });
+    expect(response.body).toEqual({ errors: { id: 'ID must be a positive whole number.' } });
     expect(recordedQueries()).toEqual([]);
   });
 });

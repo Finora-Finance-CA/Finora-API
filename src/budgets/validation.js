@@ -1,32 +1,26 @@
 // Validation for budget requests (US-31, US-33): the JSON body and the :id in the URL.
-// Pure functions with no Express or database dependencies.
+// Pure functions with no Express or database dependencies. The shared checks and their
+// messages are in ../validation/rules.js.
 
 import { BUDGET_CATEGORIES } from '../constants.js';
-import { validatePositiveCents, validateTransactionId } from '../transactions/validation.js';
+import { MESSAGES, collectErrors, isJsonObject, validateCents, validateChoice, validateId } from '../validation/rules.js';
+
+// How each field is named in messages.
+export const LABELS = Object.freeze({ category: 'Category', limit_cents: 'Limit' });
 
 /**
- * Checks a budget id from the URL, e.g. PUT /api/budgets/:id. Budget ids are BIGINT
- * identity values, like transaction ids, so the rules are the same.
+ * Checks a budget id from the URL, e.g. PUT /api/budgets/:id.
  *
  * @param {unknown} value The raw route parameter.
  * @returns {string|null} An error message, or null if the id is valid.
  */
-export const validateBudgetId = validateTransactionId;
-
-function validateCategory(value) {
-  if (value === undefined || value === null || value === '') return 'category is required.';
-  if (!BUDGET_CATEGORIES.includes(value)) return `category must be one of: ${BUDGET_CATEGORIES.join(', ')}.`;
-  return null;
-}
+export const validateBudgetId = validateId;
 
 function checkBody(body, checks) {
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { errors: { body: 'Request body must be a JSON object. Set Content-Type: application/json.' } };
+  if (!isJsonObject(body)) {
+    return { errors: { body: MESSAGES.bodyNotObject } };
   }
-  const errors = Object.fromEntries(
-    Object.entries(checks(body)).filter(([, message]) => message !== null)
-  );
-  return Object.keys(errors).length > 0 ? { errors } : { errors: null };
+  return { errors: collectErrors(checks(body)) };
 }
 
 /**
@@ -38,8 +32,8 @@ function checkBody(body, checks) {
  */
 export function validateNewBudget(body) {
   const result = checkBody(body, ({ category, limit_cents }) => ({
-    category: validateCategory(category),
-    limit_cents: validatePositiveCents(limit_cents, 'limit_cents'),
+    category: validateChoice(category, LABELS.category, BUDGET_CATEGORIES),
+    limit_cents: validateCents(limit_cents, LABELS.limit_cents),
   }));
   if (result.errors) return result;
   return { errors: null, value: { category: body.category, limit_cents: body.limit_cents } };
@@ -54,7 +48,7 @@ export function validateNewBudget(body) {
  */
 export function validateBudgetUpdate(body) {
   const result = checkBody(body, ({ limit_cents }) => ({
-    limit_cents: validatePositiveCents(limit_cents, 'limit_cents'),
+    limit_cents: validateCents(limit_cents, LABELS.limit_cents),
   }));
   if (result.errors) return result;
   return { errors: null, value: { limit_cents: body.limit_cents } };

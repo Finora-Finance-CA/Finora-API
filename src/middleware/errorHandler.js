@@ -2,11 +2,10 @@
 // errors are logged server-side but never shown to the client.
 
 import { HttpError } from '../errors.js';
-import { validateTransactionId } from '../transactions/validation.js';
+import { MESSAGES } from '../validation/rules.js';
 
-// The message every id validator gives for a bad :id (validateTransactionId, and the
-// budget and goal validators built on it).
-const INVALID_ID = validateTransactionId('');
+// The message every id validator gives for a bad :id (validateId in rules.js).
+const INVALID_ID = MESSAGES.id;
 
 export function notFound(req, res) {
   res.status(404).json({ error: 'Not found.' });
@@ -25,7 +24,7 @@ export function errorHandler(err, req, res, next) {
 
   // Malformed JSON body, reported in the same shape as validation errors.
   if (err.type === 'entity.parse.failed') {
-    return res.status(400).json({ errors: { body: 'Request body must be valid JSON.' } });
+    return res.status(400).json({ errors: { body: MESSAGES.malformedJson } });
   }
 
   // A route parameter Express couldn't decode, e.g. PUT /api/budgets/%ZZ. The router

@@ -32,7 +32,7 @@ Fill in `.env` (real values are in the team's credential document):
 | `CLIENT_ORIGIN` | No | `http://localhost:5173`. Sites allowed to call the API from a browser (see [CORS](#cors)). Not needed locally, because the Vite proxy makes requests same-origin. |
 | `NODE_ENV` | No | Leave unset locally. `production` on Render. |
 
-The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `006_create_goals.sql`); it only applies files the shared database doesn't have yet.
+The server will not start without the three required variables, or with an invalid `CLIENT_ORIGIN`. Run `npm run migrate` once after pulling a change that adds a migration (the latest is `007_add_query_indexes.sql`); it only applies files the shared database doesn't have yet.
 
 Then start the server:
 
@@ -152,8 +152,11 @@ To add a migration:
 ## Tests
 
 ```bash
+npm run lint
 npm test
 ```
+
+`npm run lint` checks every file with ESLint (`eslint.config.js`): the recommended rules, as in the front-end, with Node's globals and, in `test/`, Vitest's. It looks for real mistakes such as undefined names, unused variables and unreachable code, not formatting.
 
 Runs every `test/**/*.test.js` file once with Vitest and exits. The tests never touch the shared database or Supabase, so they need no `.env` and are safe to run any time:
 
@@ -197,7 +200,7 @@ docker stop finora-integration-test
 ### CI
 `.github/workflows/test.yml` runs two jobs on Node 22 (from `.nvmrc`) for every push and every pull request, with no secrets:
 
-- `test`: `npm ci` and `npm test`.
+- `test`: `npm ci`, `npm run lint` and `npm test`.
 - `integration`: `npm ci` and `npm run test:integration`, with a `postgres:16` service container on `localhost`.
 
 A pull request should only be merged when both pass.
@@ -240,6 +243,35 @@ Every failure prints `Seed failed: ...` with what to do, and exits with code 1 w
 | `... has to confirm their email` | Email confirmation was turned on in Supabase. Turn it off, or confirm the address, then run it again. |
 | `Could not reach Supabase ...` | Check `SUPABASE_URL` and your connection. |
 
+## Performance check
+US-62 (NFR-06): the transactions page and the dashboard load in under 2 seconds with 1,000 transactions. Migration `007_add_query_indexes.sql` adds the indexes the queries need (see the comments in the file for which query uses which, and why search has no trigram index). Two scripts check it with real data; nobody runs them automatically.
+
+| Script | What it does |
+| --- | --- |
+| `npm run seed:perf` | Gives the first sample user (`SEED_USER_1_EMAIL`) 1,000 realistic transactions over the last 12 months: every category, income and expenses, the same set each run. Running it again replaces that set, so there are never more than 1,000; the user's other transactions and everyone else's are never touched. `npm run seed:perf -- --remove` takes them away. Refuses to run when `NODE_ENV` is `production`. The perf rows are recognised by a `created_at` in 2001 (one millisecond apart), which the app never shows. `npm run seed` resets the sample users and removes them too. |
+| `npm run bench` | Times the endpoints the pages call, against the API on this machine, and prints p50, p95 and max per endpoint with PASS or FAIL. Read-only (GET requests only). Needs `BENCH_TOKEN`; optional `BENCH_API_URL` (default `http://localhost:4000`, must be localhost), `BENCH_RUNS` (default 30) and `BENCH_MONTH` (default this month). |
+
+**Passing:** every line says PASS and the last line is `PASS: every endpoint is within its budget.` (the script exits with code 0). Each single endpoint needs p95 of 500 ms or less, and the dashboard's four requests together 1,000 ms or less, which leaves at least a second of the 2-second budget for the browser. The front-end's half is checked by `npm run e2e` in Finora-FrontEnd (`e2e/performance.spec.js`).
+
+### Steps (PowerShell, in Finora-API)
+1. Apply migration 007 to the database in `.env`: `npm run migrate`. It prints `Applied 007_add_query_indexes.sql`, then `Migrations complete.` Running it again prints `No pending migrations.`
+2. Load the data: `npm run seed:perf`. It prints `... now has 1000 perf transactions ...`.
+3. Start the API in a second PowerShell window: `npm run dev`.
+4. Get a token for the sample user, without printing anything from `.env`:
+   ```powershell
+   $cfg = @{}
+   Get-Content .env | ForEach-Object { if ($_ -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)$') { $cfg[$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'") } }
+   $body = @{ email = $cfg.SEED_USER_1_EMAIL; password = $cfg.SEED_USER_1_PASSWORD } | ConvertTo-Json
+   $session = Invoke-RestMethod -Method Post -Uri "$($cfg.SUPABASE_URL)/auth/v1/token?grant_type=password" -Headers @{ apikey = $cfg.SUPABASE_PUBLISHABLE_KEY } -ContentType 'application/json' -Body $body
+   $env:BENCH_TOKEN = $session.access_token
+   Remove-Variable cfg, body, session
+   ```
+   The token lasts an hour; run this again if the bench says it was rejected.
+5. `npm run bench`. It takes a minute or two.
+6. When you're done: `npm run seed:perf -- --remove`, and `Remove-Item Env:BENCH_TOKEN`.
+
+The local API reaches the database over the internet, so these times include that round trip. If everything fails by a similar amount, check the round trip first: `Measure-Command { Invoke-RestMethod http://localhost:4000/health }`.
+
 ## Categories
 The categories are stored in the `public.categories` table (migration `004_create_categories.sql`): `Food`, `Transportation`, `Housing`, `Entertainment` and `Other`, in that order. `transactions.category` is a foreign key to it, so the database itself refuses any other category. An income may have no category.
 
@@ -251,6 +283,16 @@ All request and response bodies are JSON. Errors use one of two shapes:
 
 - `400`: `{ "errors": { "<field>": "<message>" } }`, listing every invalid field at once. A body that isn't valid JSON is reported under `body`, and a bad `:id` in the URL under `id`, including one that can't be decoded, like `%ZZ`.
 - `401`, `404`, `409`, `500` and other errors: `{ "error": "<message>" }`. A `500` never includes internal details.
+
+### Validation rules
+Every check and message is in `src/validation/rules.js`. Messages name fields the way a person would ("Amount", "Target", "From date"), never by their JSON key, so the front-end can show them as they are.
+
+- **Money** (`amount_cents`, `limit_cents`, `target_cents`, a contribution's `amount_cents`): a JSON number, a whole number of cents, greater than 0 and at most 2147483647 ($21,474,836.47). Strings are always rejected, including `"1250"`, `"12abc"`, `"1e3"` and `"Infinity"`.
+- **Dates**: exactly `YYYY-MM-DD`, a real calendar day (no Feb 30, or Feb 29 outside a leap year), from 1900-01-01 to 2100-12-31. **Months**: `YYYY-MM` from 1900-01 to 2100-12.
+- **Text** is trimmed before it's checked and saved, and counted in characters as Postgres counts them (an emoji is one).
+- **Ids** in the URL: a positive whole number with no leading zero, up to the BIGINT maximum.
+- A body that isn't valid JSON gets `{ "errors": { "body": "Request body must be valid JSON." } }`; one that isn't a JSON object gets `"Request body must be a JSON object."`. Neither is ever a `500`.
+- Invalid input never reaches the database. `test/validation/invalidInput.test.js` checks every endpoint with each kind of bad value.
 
 Every `/api/...` endpoint needs `Authorization: Bearer <supabase access token>`, and only ever reads or changes the logged-in user's own data (see [Data privacy](#data-privacy)). Money is always integer cents.
 
@@ -322,9 +364,9 @@ All the filters work together. Example: `GET /api/transactions?q=lunch&category=
 ```json
 {
   "errors": {
-    "page": "page must be a whole number from 1 to 100000.",
-    "category": "category must be one of: Food, Transportation, Housing, Entertainment, Other.",
-    "to": "to must be on or after from."
+    "page": "Page must be a whole number from 1 to 100,000.",
+    "category": "Category must be one of Food, Transportation, Housing, Entertainment or Other.",
+    "to": "To date must be on or after the From date."
   }
 }
 ```
@@ -358,7 +400,7 @@ Body:
 | Field | Required | Rules |
 | --- | --- | --- |
 | `amount_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647. `1250` means $12.50. Decimals and strings are rejected. |
-| `date` | Yes | Real calendar date as `YYYY-MM-DD`, year 1900 or later. |
+| `date` | Yes | Real calendar date as `YYYY-MM-DD`, from 1900-01-01 to 2100-12-31. |
 | `type` | Yes | `income` or `expense`. |
 | `category` | For `expense` | One of the [categories](#categories) (case-sensitive). Optional for `income`. |
 | `description` | No | String, trimmed, at most 255 characters. Empty becomes `null`. |
@@ -402,8 +444,8 @@ Example request:
 ```json
 {
   "errors": {
-    "amount_cents": "amount_cents must be greater than zero.",
-    "category": "category is required for an expense."
+    "amount_cents": "Amount must be greater than 0.",
+    "category": "Category is required for an expense."
   }
 }
 ```
@@ -467,8 +509,8 @@ Example request to `PUT /api/transactions/42`:
 ```json
 {
   "errors": {
-    "id": "id must be a positive whole number.",
-    "amount_cents": "amount_cents must be greater than zero."
+    "id": "ID must be a positive whole number.",
+    "amount_cents": "Amount must be greater than 0."
   }
 }
 ```
@@ -505,7 +547,7 @@ Authorization: Bearer <supabase access token>
 `400 Bad Request`, when `:id` is not a positive whole number:
 
 ```json
-{ "errors": { "id": "id must be a positive whole number." } }
+{ "errors": { "id": "ID must be a positive whole number." } }
 ```
 
 `401 Unauthorized`, when the token is missing, invalid or expired:
@@ -533,7 +575,7 @@ Query parameters:
 
 | Parameter | Required | Rules |
 | --- | --- | --- |
-| `month` | Yes | `YYYY-MM`, for example `2026-10`. Year 1900 or later. Given once. |
+| `month` | Yes | `YYYY-MM`, for example `2026-10`, from 1900-01 to 2100-12. Given once. |
 
 The month runs from its first day up to, but not including, the first day of the next month (`date >= '2026-10-01' AND date < '2026-11-01'`). The boundaries come from the text, so time zones can't move them. The API doesn't guess "this month", because it can't know the user's time zone; the front-end sends it.
 
@@ -554,10 +596,10 @@ The month runs from its first day up to, but not including, the first day of the
 `400 Bad Request`:
 
 ```json
-{ "errors": { "month": "month must be a real month in YYYY-MM format, e.g. 2026-10." } }
+{ "errors": { "month": "Month must be a real month in YYYY-MM format, for example 2026-10." } }
 ```
 
-Other `400` messages: `month is required, in YYYY-MM format, e.g. 2026-10.`, `month must be in 1900 or later.` and `month must be given only once.`
+Other `400` messages: `Month is required, in YYYY-MM format, for example 2026-10.`, `Month must be between 1900-01 and 2100-12.` and `Month must be given only once.`
 
 `401` and `500` as for the other endpoints.
 
@@ -621,8 +663,8 @@ Query parameters:
 ```json
 {
   "errors": {
-    "month": "month must be a real month in YYYY-MM format, e.g. 2026-10.",
-    "months": "months must be a whole number from 1 to 24."
+    "month": "Month must be a real month in YYYY-MM format, for example 2026-10.",
+    "months": "Months must be a whole number from 1 to 24."
   }
 }
 ```
@@ -669,8 +711,8 @@ Any other fields, including `user_id`, are ignored.
 ```json
 {
   "errors": {
-    "category": "category must be one of: Food, Transportation, Housing, Entertainment, Other.",
-    "limit_cents": "limit_cents must be greater than zero."
+    "category": "Category must be one of Food, Transportation, Housing, Entertainment or Other.",
+    "limit_cents": "Limit must be greater than 0."
   }
 }
 ```
@@ -782,7 +824,7 @@ Adds a goal.
 | --- | --- | --- |
 | `name` | Yes | Text, 1 to 60 characters after trimming spaces at either end. Saved trimmed. |
 | `target_cents` | Yes | Integer number of cents, greater than 0 and at most 2147483647 (the same limit as a transaction). `350000` means $3,500.00. |
-| `target_date` | No | A real date as `YYYY-MM-DD`, in 1900 or later. Leave it out, or send `null` or `""`, for no date. |
+| `target_date` | No | A real date as `YYYY-MM-DD`, from 1900-01-01 to 2100-12-31. Leave it out, or send `null` or `""`, for no date. |
 
 Any other fields, including `user_id` and `saved_cents`, are ignored. A new goal always starts with `saved_cents: 0`.
 
@@ -793,9 +835,9 @@ Any other fields, including `user_id` and `saved_cents`, are ignored. A new goal
 ```json
 {
   "errors": {
-    "name": "name is required.",
-    "target_cents": "target_cents must be greater than zero.",
-    "target_date": "target_date must be a real calendar date."
+    "name": "Name is required.",
+    "target_cents": "Target must be greater than 0.",
+    "target_date": "Target date must be a real calendar date."
   }
 }
 ```
@@ -810,19 +852,28 @@ Replaces a goal's `name`, `target_cents` and `target_date`, with the same rules 
 ### `DELETE /api/goals/:id`
 Deletes a goal. `204 No Content` on success. `400` for a bad `:id`, and `404` as for `PUT`.
 
-### For US-49: adding contributions
-`saved_cents` is only meant to change through contributions, which aren't built yet. The plan:
+### `POST /api/goals/:id/contributions`
+Adds money to a goal's saved total (US-49). `saved_cents` changes only through this endpoint.
 
-- `POST /api/goals/:id/contributions` with `{ "amount_cents": 2500 }`. Check `:id` with `validateGoalId` and the amount with `validatePositiveCents(amount_cents, 'amount_cents')`, so zero, negative and non-whole amounts get a `400`.
-- One statement adds it, scoped to the owner: `UPDATE public.goals SET saved_cents = saved_cents + $3 WHERE id = $1 AND user_id = $2 RETURNING ...` (use `GOAL_COLUMNS` and `toGoal` from `src/goals/repository.js`). No row means `404 Goal not found.`; return `200 { "goal": { ... } }` otherwise.
-- The fake database only understands `column = $n` in `SET`, so `saved_cents = saved_cents + $3` needs adding to `update()` in `test/support/fakeDatabase.js` first.
-- Use `POST` or `PUT`, never `PATCH`: CORS (`src/cors.js`) only allows `GET`, `POST`, `PUT` and `DELETE`.
+```json
+{ "amount_cents": 2500 }
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `amount_cents` | Yes | The same rules as any money amount: a whole number of cents, greater than 0, at most 2147483647. |
+
+Any other fields are ignored. The amount is added in one statement scoped to the owner, so contributions sent at the same time all count. The total may go past `target_cents`. Contributions aren't stored one by one, so they can't be listed or undone.
+
+`200 OK` with `{ "goal": { ... } }`, the goal with its new `saved_cents`.
+
+`400` for a bad `:id` or amount (all listed at once), for example `{ "errors": { "amount_cents": "Amount must be greater than 0." } }`, or `{ "errors": { "amount_cents": "This contribution would exceed the maximum saved total." } }` if the total would pass 9007199254740991 cents. `404 Not Found` with `{ "error": "Goal not found." }` when no goal with that id exists or it belongs to another user; the response is the same in both cases.
 
 ## Deployment
 The API runs on **Render** (free web service), set up by `render.yaml` in this repo. The front-end runs on Vercel; see the Deployment section in [Finora-FrontEnd](https://github.com/Finora-Finance-CA/Finora-FrontEnd#deployment). Secret values are only ever typed into the Render dashboard, never committed.
 
 ### 1. Order of operations
-1. Check the database (step 3 below): migrations 001 to 006 applied.
+1. Check the database (step 3 below): migrations 001 to 007 applied.
 2. Deploy the API on Render (step 2) and note its URL, for example `https://finora-api.onrender.com`.
 3. Deploy the front-end on Vercel with `VITE_API_URL` set to that URL, and note the front-end's URL, for example `https://finora.vercel.app`.
 4. Put the front-end's URL in the API's `CLIENT_ORIGIN` on Render.
@@ -857,7 +908,7 @@ The API runs on **Render** (free web service), set up by `render.yaml` in this r
 **Never run on Render:** migrations and the seed. The build and start commands don't run them, `test/deployment.test.js` fails if `render.yaml` ever does, and `npm run seed` refuses to run because `NODE_ENV` is `production`.
 
 ### 3. Supabase settings
-1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `006_create_goals.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
+1. **Migrations:** in the Supabase **Table Editor**, open `schema_migrations`. It should list `001_create_users.sql` to `007_add_query_indexes.sql`. If one is missing, run `npm run migrate` from your machine (see [Database Migrations](#database-migrations)); it only applies missing files.
 2. **Auth URLs:** **Authentication**, then **URL Configuration**:
    - **Site URL:** the front-end's URL, for example `https://finora.vercel.app`.
    - **Redirect URLs:** add `https://finora.vercel.app/**`, and keep `http://localhost:5173/**` for local development.

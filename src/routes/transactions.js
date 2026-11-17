@@ -15,7 +15,8 @@ import {
   updateTransaction,
 } from '../transactions/repository.js';
 import { CATEGORIES, TRANSACTION_PAGE_SIZE } from '../constants.js';
-import { validateListQuery, validateTransactionBody, validateTransactionId } from '../transactions/validation.js';
+import { LABELS, validateListQuery, validateTransactionBody, validateTransactionId } from '../transactions/validation.js';
+import { MESSAGES } from '../validation/rules.js';
 
 // Postgres error code for a foreign key violation.
 const FOREIGN_KEY_VIOLATION = '23503';
@@ -31,7 +32,7 @@ function isForeignKeyViolation(err, constraint) {
 // ever stops matching it, the database rejects the row, and the user still gets a 400
 // instead of a 500.
 function unknownCategoryResponse(res) {
-  return res.status(400).json({ errors: { category: `category must be one of: ${CATEGORIES.join(', ')}.` } });
+  return res.status(400).json({ errors: { category: MESSAGES.choice(LABELS.category, CATEGORIES) } });
 }
 
 // GET /api/transactions?page=&q=&category=&from=&to=

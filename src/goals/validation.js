@@ -1,37 +1,36 @@
-// Validation for savings goal requests (US-47): the JSON body and the :id in the URL.
-// Pure functions with no Express or database dependencies.
+// Validation for savings goal requests (US-47, US-49): the JSON body, a contribution and
+// the :id in the URL. Pure functions with no Express or database dependencies. The
+// shared checks and their messages are in ../validation/rules.js.
 
-import { validateDate, validatePositiveCents, validateTransactionId } from '../transactions/validation.js';
+import {
+  MESSAGES,
+  collectErrors,
+  isJsonObject,
+  isMissing,
+  validateCents,
+  validateDate,
+  validateId,
+  validateText,
+} from '../validation/rules.js';
 
 // Mirrors the goals_name_length CHECK in db/migrations/006_create_goals.sql.
 export const MAX_GOAL_NAME_LENGTH = 60;
 
+// How each field is named in messages.
+export const LABELS = Object.freeze({
+  name: 'Name',
+  target_cents: 'Target',
+  target_date: 'Target date',
+  contribution: 'Amount',
+});
+
 /**
- * Checks a goal id from the URL, e.g. PUT /api/goals/:id. Goal ids are BIGINT identity
- * values, like transaction ids, so the rules are the same.
+ * Checks a goal id from the URL, e.g. PUT /api/goals/:id.
  *
  * @param {unknown} value The raw route parameter.
  * @returns {string|null} An error message, or null if the id is valid.
  */
-export const validateGoalId = validateTransactionId;
-
-// Counted in characters as Postgres counts them (code points), so an emoji is one.
-const characterCount = (text) => [...text].length;
-
-function validateName(value) {
-  if (value === undefined || value === null) return 'name is required.';
-  if (typeof value !== 'string') return 'name must be a string.';
-  const name = value.trim();
-  if (name === '') return 'name is required.';
-  if (characterCount(name) > MAX_GOAL_NAME_LENGTH) return `name must be at most ${MAX_GOAL_NAME_LENGTH} characters.`;
-  return null;
-}
-
-// Optional: missing, null or "" means the goal has no target date.
-function validateTargetDate(value) {
-  if (value === undefined || value === null || value === '') return null;
-  return validateDate(value, 'target_date');
-}
+export const validateGoalId = validateId;
 
 /**
  * @typedef {object} GoalInput
@@ -52,23 +51,42 @@ function validateTargetDate(value) {
  * @returns {{ errors: Record<string, string> } | { errors: null, value: GoalInput }}
  */
 export function validateGoalBody(body) {
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { errors: { body: 'Request body must be a JSON object. Set Content-Type: application/json.' } };
+  if (!isJsonObject(body)) {
+    return { errors: { body: MESSAGES.bodyNotObject } };
   }
 
   const { name, target_cents, target_date } = body;
-  const checks = {
-    name: validateName(name),
-    target_cents: validatePositiveCents(target_cents, 'target_cents'),
-    target_date: validateTargetDate(target_date),
-  };
-  const errors = Object.fromEntries(Object.entries(checks).filter(([, message]) => message !== null));
-  if (Object.keys(errors).length > 0) {
+  const errors = collectErrors({
+    name: validateText(name, LABELS.name, { required: true, max: MAX_GOAL_NAME_LENGTH }),
+    target_cents: validateCents(target_cents, LABELS.target_cents),
+    // Optional: missing, null or "" means the goal has no target date.
+    target_date: validateDate(target_date, LABELS.target_date, { required: false }),
+  });
+  if (errors) {
     return { errors };
   }
 
   return {
     errors: null,
-    value: { name: name.trim(), target_cents, target_date: target_date || null },
+    value: { name: name.trim(), target_cents, target_date: isMissing(target_date) ? null : target_date },
   };
+}
+
+/**
+ * Validates POST /api/goals/:id/contributions: the :id and { amount_cents }, the amount
+ * added to the goal's saved_cents. Every problem is reported at once.
+ *
+ * @param {unknown} id The raw route parameter.
+ * @param {unknown} body
+ * @returns {{ errors: Record<string, string> } | { errors: null, value: { amount_cents: number } }}
+ */
+export function validateContribution(id, body) {
+  const errors = collectErrors({
+    id: validateId(id),
+    ...(isJsonObject(body)
+      ? { amount_cents: validateCents(body.amount_cents, LABELS.contribution) }
+      : { body: MESSAGES.bodyNotObject }),
+  });
+  if (errors) return { errors };
+  return { errors: null, value: { amount_cents: body.amount_cents } };
 }

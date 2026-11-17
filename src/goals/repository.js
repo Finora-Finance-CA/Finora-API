@@ -86,29 +86,28 @@ export async function deleteGoal(userId, goalId) {
 }
 
 /**
- * checks if a goal exists and is owned by the user. Used to validate a goalId path
- * parameter before calling addGoalContribution, which needs to know if the goal exists
- * or if the user has already reached the target.
+ * Adds a contribution to a goal's saved_cents, but only if the user owns the goal, in
+ * one statement so two contributions at once both count. The total stays at most
+ * Number.MAX_SAFE_INTEGER, so toGoal can always return it exactly.
+ *
+ * @param {string} userId The owner's id, taken from the verified token.
+ * @param {string} goalId Checked by validateGoalId.
+ * @param {number} amountCents Checked by validateContribution: 1 to MAX_AMOUNT_CENTS.
+ * @returns {Promise<{ goal: object } | { goal: null } | { limitReached: true }>} The
+ *   updated goal; `goal: null` if the user has no goal with that id (it doesn't exist
+ *   or someone else owns it); or `limitReached` if the total would pass the maximum.
  */
-
 export async function addGoalContribution(userId, goalId, amountCents) {
   const { rows } = await query(
     `UPDATE public.goals
-     SET saved_cents = saved_cents + $3::bigint
-     WHERE id = $1 AND user_id = $2
-       AND saved_cents <= $4::bigint - $3::bigint
+     SET saved_cents = saved_cents + $3
+     WHERE id = $1 AND user_id = $2 AND saved_cents <= $4
      RETURNING ${GOAL_COLUMNS}`,
-    [goalId, userId, amountCents, Number.MAX_SAFE_INTEGER]
+    [goalId, userId, amountCents, Number.MAX_SAFE_INTEGER - amountCents]
   );
-
   if (rows[0]) return { goal: toGoal(rows[0]) };
 
-  const existing = await query(
-    'SELECT id FROM public.goals WHERE id = $1 AND user_id = $2',
-    [goalId, userId]
-  );
-
-  return existing.rows.length
-    ? { limitReached: true }
-    : { goal: null };
+  // Nothing changed: either the goal isn't this user's, or the total is too high.
+  const existing = await query('SELECT id FROM public.goals WHERE id = $1 AND user_id = $2', [goalId, userId]);
+  return existing.rows.length > 0 ? { limitReached: true } : { goal: null };
 }

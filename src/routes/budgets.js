@@ -17,8 +17,9 @@ import {
   updateBudgetLimit,
 } from '../budgets/repository.js';
 import { summarizeBudgets } from '../budgets/status.js';
-import { validateBudgetId, validateBudgetUpdate, validateNewBudget } from '../budgets/validation.js';
+import { LABELS, validateBudgetId, validateBudgetUpdate, validateNewBudget } from '../budgets/validation.js';
 import { validateSummaryQuery } from '../summary/validation.js';
+import { MESSAGES } from '../validation/rules.js';
 
 // Postgres error codes, and the constraint names from db/migrations/005_create_budgets.sql.
 const UNIQUE_VIOLATION = '23505';
@@ -55,10 +56,10 @@ function clientErrorFor(err, category) {
     return new UnauthorizedError('User account no longer exists. Log in again.');
   }
   if (violates(err, FOREIGN_KEY_VIOLATION, BUDGET_CONSTRAINTS.category)) {
-    return { errors: { category: `category must be one of: ${BUDGET_CATEGORIES.join(', ')}.` } };
+    return { errors: { category: MESSAGES.choice(LABELS.category, BUDGET_CATEGORIES) } };
   }
   if (violates(err, CHECK_VIOLATION, BUDGET_CONSTRAINTS.positiveLimit)) {
-    return { errors: { limit_cents: 'limit_cents must be greater than zero.' } };
+    return { errors: { limit_cents: MESSAGES.positive(LABELS.limit_cents) } };
   }
   return null;
 }
