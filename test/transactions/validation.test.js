@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_AMOUNT_CENTS } from '../../src/constants.js';
 import {
-  MAX_AMOUNT_CENTS,
   MAX_DESCRIPTION_LENGTH,
   MAX_PAGE,
   MAX_SEARCH_LENGTH,

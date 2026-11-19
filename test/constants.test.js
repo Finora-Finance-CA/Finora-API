@@ -1,10 +1,9 @@
 // The category list exists twice in the API: in the categories table (seeded by
-// migration 004) and in src/constants.js, which validation uses. These fail if they drift.
+// migration 004) and in src/constants.js, which validation uses. This fails if they drift.
 
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { CATEGORIES } from '../src/constants.js';
-import { CATEGORIES as VALIDATION_CATEGORIES } from '../src/transactions/validation.js';
 
 const MIGRATION = new URL('../db/migrations/004_create_categories.sql', import.meta.url);
 
@@ -21,9 +20,5 @@ async function seededCategories() {
 describe('CATEGORIES', () => {
   it('matches the categories migration 004 seeds, in sort_order', async () => {
     expect(await seededCategories()).toEqual([...CATEGORIES]);
-  });
-
-  it('is the same list validation checks against', () => {
-    expect(VALIDATION_CATEGORIES).toBe(CATEGORIES);
   });
 });

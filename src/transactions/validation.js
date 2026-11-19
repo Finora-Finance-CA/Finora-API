@@ -3,30 +3,24 @@
 // they can be unit tested directly. The shared checks and their messages are in
 // ../validation/rules.js.
 
-import { CATEGORIES, MAX_AMOUNT_CENTS, MIN_YEAR, TRANSACTION_TYPES } from '../constants.js';
+import { CATEGORIES, TRANSACTION_TYPES } from '../constants.js';
 import {
-  MAX_ID,
   MESSAGES,
   collectErrors,
   isJsonObject,
   isMissing,
   validateCents,
   validateChoice,
-  validateDate as validateDateRule,
+  validateDate,
   validateId,
   validateText,
 } from '../validation/rules.js';
-
-// Re-exported so existing imports from this module keep working.
-export { CATEGORIES, MAX_AMOUNT_CENTS, MIN_YEAR, TRANSACTION_TYPES };
 
 export const MAX_DESCRIPTION_LENGTH = 255;
 // Search text is matched against descriptions, so it can't usefully be longer.
 export const MAX_SEARCH_LENGTH = MAX_DESCRIPTION_LENGTH;
 // Far beyond any real history at 20 per page; stops absurd OFFSETs reaching Postgres.
 export const MAX_PAGE = 100_000;
-
-export const MAX_TRANSACTION_ID = MAX_ID;
 
 // How each field is named in messages.
 export const LABELS = Object.freeze({
@@ -42,28 +36,6 @@ export const LABELS = Object.freeze({
 });
 
 const PAGE_PATTERN = /^[1-9]\d*$/;
-
-/**
- * A money amount in integer cents (see validateCents in ../validation/rules.js).
- *
- * @param {unknown} value
- * @param {string} [label] How the message names the field.
- * @returns {string|null} An error message, or null if it's valid.
- */
-export function validatePositiveCents(value, label = LABELS.amount_cents) {
-  return validateCents(value, label);
-}
-
-/**
- * A required YYYY-MM-DD date (see validateDate in ../validation/rules.js).
- *
- * @param {unknown} value
- * @param {string} [label]
- * @returns {string|null}
- */
-export function validateDate(value, label = LABELS.date) {
-  return validateDateRule(value, label);
-}
 
 /**
  * Checks a transaction id taken from the URL, e.g. PUT /api/transactions/:id.
@@ -97,7 +69,7 @@ export function validateTransactionBody(body) {
   const { amount_cents, date, type, category, description } = body;
   const errors = collectErrors({
     amount_cents: validateCents(amount_cents, LABELS.amount_cents),
-    date: validateDateRule(date, LABELS.date),
+    date: validateDate(date, LABELS.date),
     type: validateChoice(type, LABELS.type, TRANSACTION_TYPES),
     category: validateCategory(category, type),
     description: validateText(description, LABELS.description, { max: MAX_DESCRIPTION_LENGTH }),
@@ -165,7 +137,7 @@ function validateCategories(value) {
 function validateBound(value, field) {
   if (value === undefined || value === '') return { value: null };
   if (Array.isArray(value)) return { error: MESSAGES.onlyOnce(LABELS[field]) };
-  const error = validateDateRule(value, LABELS[field]);
+  const error = validateDate(value, LABELS[field]);
   return error ? { error } : { value };
 }
 

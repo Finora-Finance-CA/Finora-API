@@ -5,7 +5,8 @@ import {
   SAMPLE_HISTORY_DAYS,
   SAMPLE_PROFILES,
 } from '../../scripts/seed/sampleTransactions.js';
-import { CATEGORIES, validateTransactionBody } from '../../src/transactions/validation.js';
+import { CATEGORIES } from '../../src/constants.js';
+import { validateTransactionBody } from '../../src/transactions/validation.js';
 
 const TODAY = '2026-10-06';
 const DAY_MS = 24 * 60 * 60 * 1000;
