@@ -114,7 +114,7 @@ CLIENT_ORIGIN=https://finora.vercel.app,http://localhost:5173
 - Requests with no `Origin` (curl, Render's health check) work as before. CORS is enforced by browsers only; it is not access control, and every `/api` route still needs a token.
 - An empty `CLIENT_ORIGIN` allows no other site. `*`, a path or a value that isn't an `http(s)` origin stops the server at startup with a message naming the bad entry.
 
-Routes and middleware can throw `HttpError(status, message)`, `UnauthorizedError(message)` or `NotFoundError(message)` from `src/errors.js`, and the central error handler sends `{ "error": message }` with that status.
+Routes and middleware can throw `HttpError(status, message)`, `UnauthorizedError(message)` or `NotFoundError(message)` from `src/errors.js`, and the central error handler sends `{ "error": message }` with that status. A route that writes rows maps the Postgres errors the client caused (a duplicate, a deleted user, a failed `CHECK`) with the helpers in `src/databaseErrors.js`, so they become a `400`, `401` or `409` instead of a `500`.
 
 ### Testing with a real token
 1. Run the front-end and log in.

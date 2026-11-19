@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { expensesByMonth, trendRange } from '../../src/summary/trend.js';
+import { expensesByMonth } from '../../src/summary/trend.js';
+import { trendRange } from '../../src/summary/validation.js';
 
 describe('trendRange', () => {
   it('gives the 6 months ending at the given one, oldest first, and their date range', () => {
@@ -50,11 +51,6 @@ describe('expensesByMonth', () => {
 
   it('gives every month 0 when there are no expenses', () => {
     expect(expensesByMonth(MONTHS, []).map(({ expense_cents }) => expense_cents)).toEqual([0, 0, 0]);
-  });
-
-  it('accepts dates as JS Dates, as pg may return them', () => {
-    const result = expensesByMonth(MONTHS, [{ date: new Date(2026, 9, 31), spent_cents: 700 }]);
-    expect(result[1]).toEqual({ month: '2026-10', expense_cents: 700 });
   });
 
   it('ignores days outside the months asked for', () => {

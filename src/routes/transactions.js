@@ -6,7 +6,8 @@
 // here are turned into JSON by the central error handler.
 
 import { Router } from 'express';
-import { NotFoundError, UnauthorizedError } from '../errors.js';
+import { FOREIGN_KEY_VIOLATION, respondToDatabaseError, userGoneError, violates } from '../databaseErrors.js';
+import { NotFoundError } from '../errors.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import {
   deleteTransaction,
@@ -18,21 +19,19 @@ import { CATEGORIES, TRANSACTION_PAGE_SIZE } from '../constants.js';
 import { LABELS, validateListQuery, validateTransactionBody, validateTransactionId } from '../transactions/validation.js';
 import { MESSAGES } from '../validation/rules.js';
 
-// Postgres error code for a foreign key violation.
-const FOREIGN_KEY_VIOLATION = '23503';
-
 // Sent whether the transaction doesn't exist or belongs to someone else.
 const TRANSACTION_NOT_FOUND = 'Transaction not found.';
 
-function isForeignKeyViolation(err, constraint) {
-  return err?.code === FOREIGN_KEY_VIOLATION && err.constraint === constraint;
-}
-
-// Validation already checks categories against CATEGORIES. If the categories table
-// ever stops matching it, the database rejects the row, and the user still gets a 400
-// instead of a 500.
-function unknownCategoryResponse(res) {
-  return res.status(400).json({ errors: { category: MESSAGES.choice(LABELS.category, CATEGORIES) } });
+// The response for a database error the client caused, or null for anything else.
+function clientErrorFor(err) {
+  if (violates(err, FOREIGN_KEY_VIOLATION, 'transactions_user_id_fkey')) return userGoneError();
+  // Validation already checks categories against CATEGORIES. If the categories table
+  // ever stops matching it, the database rejects the row, and the user still gets a 400
+  // instead of a 500.
+  if (violates(err, FOREIGN_KEY_VIOLATION, 'transactions_category_fkey')) {
+    return { errors: { category: MESSAGES.choice(LABELS.category, CATEGORIES) } };
+  }
+  return null;
 }
 
 // GET /api/transactions?page=&q=&category=&from=&to=
@@ -69,14 +68,7 @@ export async function handleCreateTransaction(req, res) {
     const transaction = await insertTransaction(req.user.id, value);
     return res.status(201).json({ transaction });
   } catch (err) {
-    // The token was valid but its user has since been deleted.
-    if (isForeignKeyViolation(err, 'transactions_user_id_fkey')) {
-      throw new UnauthorizedError('User account no longer exists. Log in again.');
-    }
-    if (isForeignKeyViolation(err, 'transactions_category_fkey')) {
-      return unknownCategoryResponse(res);
-    }
-    throw err;
+    return respondToDatabaseError(err, res, clientErrorFor(err));
   }
 }
 
@@ -94,10 +86,7 @@ export async function handleUpdateTransaction(req, res) {
   try {
     transaction = await updateTransaction(req.user.id, req.params.id, value);
   } catch (err) {
-    if (isForeignKeyViolation(err, 'transactions_category_fkey')) {
-      return unknownCategoryResponse(res);
-    }
-    throw err;
+    return respondToDatabaseError(err, res, clientErrorFor(err));
   }
   if (!transaction) {
     throw new NotFoundError(TRANSACTION_NOT_FOUND);
