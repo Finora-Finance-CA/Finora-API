@@ -7,7 +7,15 @@
 
 import { Router } from 'express';
 import { BUDGET_CATEGORIES } from '../constants.js';
-import { ConflictError, HttpError, NotFoundError, UnauthorizedError } from '../errors.js';
+import {
+  CHECK_VIOLATION,
+  FOREIGN_KEY_VIOLATION,
+  UNIQUE_VIOLATION,
+  respondToDatabaseError,
+  userGoneError,
+  violates,
+} from '../databaseErrors.js';
+import { ConflictError, NotFoundError } from '../errors.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import {
   deleteBudget,
@@ -21,10 +29,7 @@ import { LABELS, validateBudgetId, validateBudgetUpdate, validateNewBudget } fro
 import { validateSummaryQuery } from '../summary/validation.js';
 import { MESSAGES } from '../validation/rules.js';
 
-// Postgres error codes, and the constraint names from db/migrations/005_create_budgets.sql.
-const UNIQUE_VIOLATION = '23505';
-const FOREIGN_KEY_VIOLATION = '23503';
-const CHECK_VIOLATION = '23514';
+// The constraint names from db/migrations/005_create_budgets.sql.
 export const BUDGET_CONSTRAINTS = Object.freeze({
   oneBudgetPerCategory: 'budgets_user_id_category_key',
   user: 'budgets_user_id_fkey',
@@ -35,8 +40,6 @@ export const BUDGET_CONSTRAINTS = Object.freeze({
 // Sent whether the budget doesn't exist or belongs to someone else.
 const BUDGET_NOT_FOUND = 'Budget not found.';
 
-const violates = (err, code, constraint) => err?.code === code && err.constraint === constraint;
-
 /**
  * The response for a database error the client caused, or null for anything else.
  * Validation catches most of these first; this covers what only the database can know
@@ -44,7 +47,7 @@ const violates = (err, code, constraint) => err?.code === code && err.constraint
  *
  * @param {Error} err
  * @param {string} [category] The category being added, for the 409 message.
- * @returns {HttpError | { errors: Record<string, string> } | null} An error to throw,
+ * @returns {import('../errors.js').HttpError | { errors: Record<string, string> } | null} An error to throw,
  *   a 400 body to send, or null.
  */
 function clientErrorFor(err, category) {
@@ -52,8 +55,7 @@ function clientErrorFor(err, category) {
     return new ConflictError(`You already have a budget for ${category}. Change that one instead.`);
   }
   if (violates(err, FOREIGN_KEY_VIOLATION, BUDGET_CONSTRAINTS.user)) {
-    // The token was valid but its user has since been deleted.
-    return new UnauthorizedError('User account no longer exists. Log in again.');
+    return userGoneError();
   }
   if (violates(err, FOREIGN_KEY_VIOLATION, BUDGET_CONSTRAINTS.category)) {
     return { errors: { category: MESSAGES.choice(LABELS.category, BUDGET_CATEGORIES) } };
@@ -62,14 +64,6 @@ function clientErrorFor(err, category) {
     return { errors: { limit_cents: MESSAGES.positive(LABELS.limit_cents) } };
   }
   return null;
-}
-
-// Sends the 400, or throws the HttpError, for a database error; rethrows anything else.
-function handleDatabaseError(err, res, category) {
-  const clientError = clientErrorFor(err, category);
-  if (!clientError) throw err;
-  if (clientError instanceof HttpError) throw clientError;
-  return res.status(400).json(clientError);
 }
 
 // GET /api/budgets
@@ -105,7 +99,7 @@ export async function handleCreateBudget(req, res) {
     const budget = await insertBudget(req.user.id, value);
     return res.status(201).json({ budget });
   } catch (err) {
-    return handleDatabaseError(err, res, value.category);
+    return respondToDatabaseError(err, res, clientErrorFor(err, value.category));
   }
 }
 
@@ -123,7 +117,7 @@ export async function handleUpdateBudget(req, res) {
   try {
     budget = await updateBudgetLimit(req.user.id, req.params.id, value.limit_cents);
   } catch (err) {
-    return handleDatabaseError(err, res);
+    return respondToDatabaseError(err, res, clientErrorFor(err));
   }
   if (!budget) {
     throw new NotFoundError(BUDGET_NOT_FOUND);

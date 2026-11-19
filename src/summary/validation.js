@@ -3,7 +3,6 @@
 
 import { MAX_YEAR, MIN_YEAR } from '../constants.js';
 import { MESSAGES } from '../validation/rules.js';
-import { trendRange } from './trend.js';
 
 const MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
 export const MONTH_MESSAGES = Object.freeze({
@@ -31,6 +30,29 @@ export function monthRange(year, month) {
     start: `${pad(year, 4)}-${pad(month, 2)}-01`,
     end: `${pad(nextYear, 4)}-${pad(nextMonth, 2)}-01`,
   };
+}
+
+/**
+ * The `count` months ending at (and including) year-month, oldest first, and the date
+ * range covering them all. Whole numbers only, never a JS Date, like monthRange.
+ *
+ * @param {number} year
+ * @param {number} month 1 to 12.
+ * @param {number} count How many months, 1 or more.
+ * @returns {{ months: string[], start: string, end: string }} months as YYYY-MM;
+ *   start is the first day of the first month, end the first day after the last
+ *   (exclusive), as for monthRange.
+ */
+export function trendRange(year, month, count) {
+  // Months since year 0, so stepping back across a new year is plain subtraction.
+  const last = year * 12 + (month - 1);
+  const months = [];
+  for (let index = last - count + 1; index <= last; index += 1) {
+    months.push(`${pad(Math.floor(index / 12), 4)}-${pad((index % 12) + 1, 2)}`);
+  }
+
+  const [firstYear, firstMonth] = months[0].split('-').map(Number);
+  return { months, start: monthRange(firstYear, firstMonth).start, end: monthRange(year, month).end };
 }
 
 /**

@@ -6,7 +6,14 @@
 // caused become 400 or 401, so none of them turn into a 500.
 
 import { Router } from 'express';
-import { HttpError, NotFoundError, UnauthorizedError } from '../errors.js';
+import {
+  CHECK_VIOLATION,
+  FOREIGN_KEY_VIOLATION,
+  respondToDatabaseError,
+  userGoneError,
+  violates,
+} from '../databaseErrors.js';
+import { NotFoundError } from '../errors.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { deleteGoal, insertGoal, listGoals, updateGoal, addGoalContribution } from '../goals/repository.js';
 import {
@@ -18,9 +25,7 @@ import {
 } from '../goals/validation.js';
 import { MESSAGES } from '../validation/rules.js';
 
-// Postgres error codes, and the constraint names from db/migrations/006_create_goals.sql.
-const FOREIGN_KEY_VIOLATION = '23503';
-const CHECK_VIOLATION = '23514';
+// The constraint names from db/migrations/006_create_goals.sql.
 export const GOAL_CONSTRAINTS = Object.freeze({
   user: 'goals_user_id_fkey',
   positiveTarget: 'goals_target_cents_positive',
@@ -35,20 +40,17 @@ const GOAL_NOT_FOUND = 'Goal not found.';
 // A contribution that would take saved_cents past what the API can return exactly.
 export const SAVED_TOTAL_LIMIT = 'This contribution would exceed the maximum saved total.';
 
-const violates = (err, code, constraint) => err?.code === code && err.constraint === constraint;
-
 /**
  * The response for a database error the client caused, or null for anything else.
  * Validation catches these first; this covers anything that ever slips past it.
  *
  * @param {Error} err
- * @returns {HttpError | { errors: Record<string, string> } | null} An error to throw,
+ * @returns {import('../errors.js').HttpError | { errors: Record<string, string> } | null} An error to throw,
  *   a 400 body to send, or null.
  */
 function clientErrorFor(err) {
   if (violates(err, FOREIGN_KEY_VIOLATION, GOAL_CONSTRAINTS.user)) {
-    // The token was valid but its user has since been deleted.
-    return new UnauthorizedError('User account no longer exists. Log in again.');
+    return userGoneError();
   }
   if (violates(err, CHECK_VIOLATION, GOAL_CONSTRAINTS.positiveTarget)) {
     return { errors: { target_cents: MESSAGES.positive(LABELS.target_cents) } };
@@ -57,14 +59,6 @@ function clientErrorFor(err) {
     return { errors: { name: MESSAGES.maxLength(LABELS.name, MAX_GOAL_NAME_LENGTH) } };
   }
   return null;
-}
-
-// Sends the 400, or throws the HttpError, for a database error; rethrows anything else.
-function handleDatabaseError(err, res) {
-  const clientError = clientErrorFor(err);
-  if (!clientError) throw err;
-  if (clientError instanceof HttpError) throw clientError;
-  return res.status(400).json(clientError);
 }
 
 // GET /api/goals
@@ -84,7 +78,7 @@ export async function handleCreateGoal(req, res) {
     const goal = await insertGoal(req.user.id, value);
     return res.status(201).json({ goal });
   } catch (err) {
-    return handleDatabaseError(err, res);
+    return respondToDatabaseError(err, res, clientErrorFor(err));
   }
 }
 
@@ -102,7 +96,7 @@ export async function handleUpdateGoal(req, res) {
   try {
     goal = await updateGoal(req.user.id, req.params.id, value);
   } catch (err) {
-    return handleDatabaseError(err, res);
+    return respondToDatabaseError(err, res, clientErrorFor(err));
   }
   if (!goal) {
     throw new NotFoundError(GOAL_NOT_FOUND);
